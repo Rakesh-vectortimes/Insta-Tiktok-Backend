@@ -4,6 +4,27 @@ const path = require('path');
 const PROJECT_ROOT = path.join(__dirname, '../..');
 const COOKIE_CANDIDATES = ['cookies.txt', 'www.instagram.com_cookies.txt'];
 
+function getCookieWritePath() {
+  return process.env.COOKIE_FILE_PATH || path.join(PROJECT_ROOT, 'cookies.txt');
+}
+
+function writeCookiesFromEnv() {
+  const cookieContent = process.env.COOKIES_TXT_CONTENT;
+  if (!cookieContent) return false;
+
+  try {
+    const target = getCookieWritePath();
+    const normalized = cookieContent.replace(/\\n/g, '\n');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, normalized, 'utf8');
+    console.log(`[cookies] Wrote cookies from env to ${target}`);
+    return true;
+  } catch (err) {
+    console.error('[cookies] Failed to write cookies from env:', err.message);
+    return false;
+  }
+}
+
 function resolveCookieFile() {
   if (process.env.COOKIE_FILE_PATH) {
     return process.env.COOKIE_FILE_PATH;
@@ -37,10 +58,13 @@ function loadCookieHeader(domain = 'instagram.com') {
 }
 
 function hasCookieFile() {
-  if (process.env.COOKIE_FILE_PATH) {
-    return fs.existsSync(process.env.COOKIE_FILE_PATH);
-  }
-  return COOKIE_CANDIDATES.some((name) => fs.existsSync(path.join(PROJECT_ROOT, name)));
+  return fs.existsSync(resolveCookieFile());
 }
 
-module.exports = { getCookieFile, loadCookieHeader, hasCookieFile };
+module.exports = {
+  getCookieFile,
+  loadCookieHeader,
+  hasCookieFile,
+  writeCookiesFromEnv,
+  getCookieWritePath,
+};

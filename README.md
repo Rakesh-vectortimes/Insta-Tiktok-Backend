@@ -111,7 +111,8 @@ Optional body/query params for video endpoints: `format` (`mp4` | `mp3`), `quali
 | `FRONTEND_URL` | `*` | CORS allowed origin |
 | `INSTAGRAM_COOKIES_BROWSER` | — | Browser name for yt-dlp cookie import |
 | `INSTAGRAM_SESSION_ID` | — | Instagram session ID fallback |
-| `COOKIE_FILE_PATH` | — | Custom path to cookies file (e.g. `/app/data/cookies.txt` on Railway) |
+| `COOKIE_FILE_PATH` | — | Custom path to write/read cookies file |
+| `COOKIES_TXT_CONTENT` | — | Full `cookies.txt` content (for Railway Trial — no volumes) |
 
 ## Project Structure
 
@@ -144,10 +145,8 @@ This backend requires **yt-dlp** and **ffmpeg** as system binaries, so it must r
 2. Add environment variables:
    - `PORT=4000`
    - `FRONTEND_URL=https://your-frontend-domain.com`
-   - `COOKIE_FILE_PATH=/app/data/cookies.txt` (after volume setup)
+   - `COOKIES_TXT_CONTENT` — full cookies file content (see below)
 3. **Settings** → **Networking** → **Generate Domain**
-4. **Settings** → **Volumes** → mount at `/app/data`
-5. Open the service shell and create cookies: `cat > /app/data/cookies.txt`, paste exported cookies, then `Ctrl+D`
 
 Verify:
 
@@ -155,9 +154,23 @@ Verify:
 curl https://your-app.up.railway.app/health
 ```
 
+Deploy logs should show: `[cookies] Wrote cookies from env to /app/cookies.txt`
+
 ### Instagram cookies on the server
 
-There is no browser on the server, so `INSTAGRAM_COOKIES_BROWSER` will not work in production. Upload `cookies.txt` via a Railway volume (recommended) — **never commit cookie files** to this public repo.
+There is no browser on the server, so `INSTAGRAM_COOKIES_BROWSER` will not work in production. **Never commit cookie files** to this public repo.
+
+**Trial plan (no volumes):** store the entire `cookies.txt` as `COOKIES_TXT_CONTENT`. On boot, the server writes it to disk automatically.
+
+Convert your local file to a single-line escaped string:
+
+```bash
+node -e "console.log(JSON.stringify(require('fs').readFileSync('cookies.txt','utf8')))"
+```
+
+Copy the value **between the outer quotes** into Railway → **Variables** → `COOKIES_TXT_CONTENT`.
+
+**Hobby plan+ (optional):** mount a volume at `/app/data`, set `COOKIE_FILE_PATH=/app/data/cookies.txt`, and upload via the Railway shell instead.
 
 Update your frontend env:
 

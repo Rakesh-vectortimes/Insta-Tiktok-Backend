@@ -1,4 +1,8 @@
 require('dotenv').config();
+const { writeCookiesFromEnv, hasCookieFile, getCookieFile } = require('./utils/cookies');
+
+writeCookiesFromEnv();
+
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -7,7 +11,6 @@ const swaggerSpec = require('./config/swagger');
 const instagramRoutes = require('./routes/instagram');
 const tiktokRoutes = require('./routes/tiktok');
 const { cleanupTemp } = require('./utils/cleanup');
-const { hasCookieFile, getCookieFile } = require('./utils/cookies');
 const path = require('path');
 
 const app = express();
@@ -72,6 +75,6 @@ app.listen(PORT, () => {
   if (hasCookieFile()) {
     console.log(`🍪 Instagram cookies loaded: ${path.basename(getCookieFile())}`);
   } else {
-    console.warn('⚠️  No Instagram cookies found — add cookies.txt to project root');
+    console.warn('⚠️  No Instagram cookies found — add cookies.txt locally or set COOKIES_TXT_CONTENT in Railway Variables');
   }
 });
