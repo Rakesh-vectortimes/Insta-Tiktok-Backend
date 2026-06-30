@@ -143,9 +143,9 @@ This backend requires **yt-dlp** and **ffmpeg** as system binaries, so it must r
 
 1. Sign in at Railway with GitHub → **New Project** → **Deploy from GitHub repo** → select this repo
 2. Add environment variables:
-   - `PORT=4000`
    - `FRONTEND_URL=https://your-frontend-domain.com`
    - `COOKIES_TXT_CONTENT` — full cookies file content (see below)
+   - **Do not set `PORT`** — Railway injects it automatically; overriding it can break health checks
 3. **Settings** → **Networking** → **Generate Domain**
 
 Verify:

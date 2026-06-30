@@ -86,7 +86,7 @@ app.get('/health', (req, res) => {
 setInterval(cleanupTemp, 30 * 60 * 1000);
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server running on port ${PORT}`);
   if (hasCookieFile()) {
     console.log(`🍪 Instagram cookies loaded: ${path.basename(getCookieFile())}`);
