@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
 const path = require('path');
+const { getProxyUrl } = require('../utils/igHttp');
 
 const TEMP = path.join(__dirname, '../../temp');
 
@@ -28,6 +29,15 @@ function buildArgs(extraArgs = []) {
     '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   ];
 
+  if (process.env.YTDLP_IMPERSONATE) {
+    args.push('--impersonate', process.env.YTDLP_IMPERSONATE);
+  }
+
+  const proxyUrl = getProxyUrl();
+  if (proxyUrl) {
+    args.push('--proxy', proxyUrl);
+  }
+
   return [...args, ...extraArgs];
 }
 
@@ -39,10 +49,10 @@ function formatYtdlpError(raw = '') {
     return 'This post contains images only. Use POST /api/instagram/post — yt-dlp cannot download photo carousels directly.';
   }
   if (/rate|429|empty media/i.test(raw)) {
-    return 'Instagram rate-limited. Add cookies.txt to project root (export while logged in via browser extension).';
+    return 'Instagram rate-limited this request. Try again later.';
   }
-  if (/login required|authentication|cookies/i.test(raw)) {
-    return 'Instagram requires login. Add cookies.txt to project root.';
+  if (/login required|authentication|cookies|private/i.test(raw)) {
+    return 'This content requires login or is not publicly accessible.';
   }
   return raw.trim() || 'yt-dlp failed';
 }

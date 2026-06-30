@@ -1,4 +1,10 @@
 const axios = require('axios');
+const {
+  igAxios,
+  chromeDocumentHeaders,
+  chromeApiHeaders,
+  iphoneHeaders,
+} = require('../utils/igHttp');
 
 const USER_AGENTS = [
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
@@ -8,8 +14,7 @@ const USER_AGENTS = [
 ];
 
 // Instagram only embeds media JSON on mobile UA; desktop/Android UAs return a login SPA shell.
-const EMBED_USER_AGENT =
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+const EMBED_USER_AGENT = iphoneHeaders()['User-Agent'];
 
 function randomUA() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
@@ -36,6 +41,64 @@ function normalizePostUrl(url) {
     return `https://www.instagram.com/reel/${shortcode}/`;
   }
   return `https://www.instagram.com/p/${shortcode}/`;
+}
+
+function shortcodeToMediaId(shortcode) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let id = 0n;
+  for (const char of shortcode) {
+    const index = alphabet.indexOf(char);
+    if (index < 0) throw new Error('Invalid Instagram shortcode');
+    id = id * 64n + BigInt(index);
+  }
+  return id.toString();
+}
+
+function extractLsdToken(html) {
+  const match =
+    html.match(/"LSD",\[\],\{"token":"([^"]+)"/) ||
+    html.match(/"lsd":"([^"]+)"/);
+  return match?.[1] || null;
+}
+
+function cookiesFromSetCookie(setCookie = []) {
+  return setCookie.map((c) => c.split(';')[0]).join('; ');
+}
+
+function parseGraphqlProduct(product) {
+  if (!product) return null;
+
+  if (product.carousel_media?.length) {
+    const items = product.carousel_media
+      .map((node, i) => {
+        const parsed = parseMediaNode(node);
+        return parsed ? { index: i + 1, ...parsed } : null;
+      })
+      .filter(Boolean);
+
+    if (!items.length) return null;
+    return {
+      type: 'carousel',
+      count: items.length,
+      items,
+      title: product.caption?.text,
+      author: product.user?.username,
+    };
+  }
+
+  const parsed = parseMediaNode(product);
+  if (!parsed) return null;
+
+  return {
+    type: parsed.type,
+    url: parsed.url,
+    thumbnail: parsed.thumbnail,
+    ext: parsed.ext,
+    title: parsed.title,
+    duration: parsed.duration,
+    videoVersions: parsed.videoVersions,
+    author: product.user?.username || product.owner?.username,
+  };
 }
 
 function isInstagramPageUrl(url) {
@@ -241,12 +304,11 @@ function parseEmbedContextJson(html) {
     if (result) return result;
 
     if (isVideoMediaNode(media)) {
-      throw new Error('Video URL not available in public embed');
+      return null;
     }
 
     return null;
   } catch (err) {
-    if (err.message === 'Video URL not available in public embed') throw err;
     console.warn('[scraper] contextJSON parse failed:', err.message);
     return null;
   }
@@ -274,14 +336,8 @@ function extractCdnMediaFromHtml(html) {
 }
 
 async function fetchPageHtml(pageUrl) {
-  const { data, status } = await axios.get(pageUrl, {
-    headers: {
-      ...igHeaders(),
-      Accept: 'text/html,application/xhtml+xml',
-      'Sec-Fetch-Mode': 'navigate',
-    },
-    timeout: 20000,
-    validateStatus: (s) => s < 500,
+  const { data, status } = await igAxios.get(pageUrl, {
+    headers: chromeDocumentHeaders(),
   });
 
   if (status !== 200) {
@@ -342,10 +398,9 @@ async function fetchEmbedHtml(shortcode) {
 
   for (const embedUrl of embedPaths) {
     try {
-      const { data, status } = await axios.get(embedUrl, {
+      const { data, status } = await igAxios.get(embedUrl, {
         headers: embedHeaders(),
         timeout: 15000,
-        validateStatus: (s) => s < 500,
       });
 
       if (status !== 200) {
@@ -357,6 +412,10 @@ async function fetchEmbedHtml(shortcode) {
 
       const fromContext = parseEmbedContextJson(html);
       if (fromContext) return fromContext;
+
+      if (html.includes('contextJSON') && /"is_video":true|"__typename":"GraphVideo"/.test(html)) {
+        lastError = new Error('Video URL not available in public embed');
+      }
 
       const fromRegex = parseEmbedHtmlFallback(html);
       if (fromRegex) return fromRegex;
@@ -375,6 +434,128 @@ async function fetchEmbedHtml(shortcode) {
   throw lastError || new Error('Could not parse embed HTML');
 }
 
+async function fetchPolarisGraphql(pageUrl) {
+  const shortcode = extractShortcode(pageUrl);
+  if (!shortcode) throw new Error('Invalid Instagram URL');
+
+  const mediaId = shortcodeToMediaId(shortcode);
+  const pageRes = await igAxios.get(pageUrl, {
+    headers: chromeDocumentHeaders(),
+  });
+
+  if (pageRes.status !== 200) {
+    throw new Error(`Page fetch returned status ${pageRes.status}`);
+  }
+
+  const html = String(pageRes.data);
+  const lsd = extractLsdToken(html);
+  if (!lsd) throw new Error('GraphQL token not found on page');
+
+  const cookieHeader = cookiesFromSetCookie(pageRes.headers['set-cookie']);
+  const csrf = cookieHeader.match(/csrftoken=([^;]+)/)?.[1] || '';
+  const gqlHeaders = {
+    ...chromeApiHeaders(pageUrl),
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'X-FB-Friendly-Name': 'PolarisLoggedOutDesktopWWWPostRootContentQuery',
+    'X-CSRFToken': csrf,
+    'X-FB-LSD': lsd,
+    ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+  };
+
+  const queries = [
+    {
+      variables: { media_id: mediaId },
+      doc_id: '27130156389949648',
+    },
+    {
+      variables: { shortcode },
+      doc_id: '8845758582119845',
+    },
+  ];
+
+  let lastError = new Error('GraphQL returned no media URL');
+
+  for (const query of queries) {
+    const body = new URLSearchParams({
+      av: '0',
+      __d: 'www',
+      __user: '0',
+      dpr: '1',
+      lsd,
+      fb_api_caller_class: 'RelayModern',
+      fb_api_req_friendly_name: 'PolarisLoggedOutDesktopWWWPostRootContentQuery',
+      server_timestamps: 'true',
+      variables: JSON.stringify(query.variables),
+      doc_id: query.doc_id,
+    });
+
+    const gqlRes = await igAxios.post('https://www.instagram.com/api/graphql', body.toString(), {
+      headers: gqlHeaders,
+    });
+
+    if (gqlRes.status !== 200 || typeof gqlRes.data !== 'object') {
+      lastError = new Error('GraphQL request blocked');
+      continue;
+    }
+
+    const product =
+      gqlRes.data?.data?.xig_polaris_media?.if_not_gated_logged_out ||
+      gqlRes.data?.data?.xdt_shortcode_media ||
+      gqlRes.data?.data?.shortcode_media;
+
+    const media = parseGraphqlProduct(product);
+    if (media) return media;
+    lastError = new Error('GraphQL returned no media URL');
+  }
+
+  throw lastError;
+}
+
+async function fetchPublicYtdlp(pageUrl) {
+  const { getInfo } = require('./ytdlp');
+  const info = await getInfo(pageUrl, ['--format', 'b']);
+
+  if (info.entries?.length) {
+    const items = info.entries
+      .map((entry, i) => {
+        if (!entry.url) return null;
+        return {
+          index: i + 1,
+          type: entry.ext === 'mp4' ? 'video' : 'image',
+          url: entry.url,
+          thumbnail: entry.thumbnail,
+          ext: entry.ext || 'jpg',
+        };
+      })
+      .filter(Boolean);
+
+    if (!items.length) throw new Error('yt-dlp returned no media URL');
+
+    if (items.length === 1) {
+      return {
+        type: items[0].type,
+        url: items[0].url,
+        thumbnail: items[0].thumbnail,
+        ext: items[0].ext,
+        title: info.title,
+      };
+    }
+
+    return { type: 'carousel', count: items.length, items, title: info.title };
+  }
+
+  if (!info.url) throw new Error('yt-dlp returned no media URL');
+
+  return {
+    type: info.ext === 'mp4' ? 'video' : 'image',
+    url: info.url,
+    thumbnail: info.thumbnail,
+    ext: info.ext || 'mp4',
+    title: info.title,
+    duration: info.duration,
+  };
+}
+
 async function scrapeInstagram(pageUrl) {
   const normalized = normalizePostUrl(pageUrl);
   const shortcode = extractShortcode(normalized);
@@ -383,13 +564,19 @@ async function scrapeInstagram(pageUrl) {
   let media = null;
   const errors = [];
 
-  if (!media) {
+  const tryStep = async (label, fn) => {
+    if (media) return;
     try {
-      media = await fetchEmbedHtml(shortcode);
+      media = await fn();
     } catch (err) {
-      errors.push(`embed: ${err.message}`);
+      errors.push(`${label}: ${err.message}`);
     }
-  }
+  };
+
+  await tryStep('embed', () => fetchEmbedHtml(shortcode));
+  await tryStep('page', () => fetchPageMeta(normalized));
+  await tryStep('graphql', () => fetchPolarisGraphql(normalized));
+  await tryStep('ytdlp', () => fetchPublicYtdlp(normalized));
 
   if (!media) {
     throw new Error(`Could not fetch post (${errors.join('; ')})`);

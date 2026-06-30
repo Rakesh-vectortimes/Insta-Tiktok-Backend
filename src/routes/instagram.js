@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios');
+const { igAxios, chromeApiHeaders } = require('../utils/igHttp');
 const archiver = require('archiver');
 const path = require('path');
 const fs = require('fs');
@@ -260,13 +260,12 @@ router.get('/dp/:username', async (req, res) => {
 
   try {
     // Fetch profile page and extract profile_pic_url_hd
-    const { data } = await axios.get(
+    const { data } = await igAxios.get(
       `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
       {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-          'x-ig-app-id': '936619743392459',
-        }
+          ...chromeApiHeaders(`https://www.instagram.com/${username}/`),
+        },
       }
     );
     const user = data?.data?.user;

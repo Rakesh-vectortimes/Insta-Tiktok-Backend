@@ -3,6 +3,9 @@ const { parseUrl } = require('../services/urlParser');
 const SCOPE_MESSAGE =
   "This content can't be downloaded — it's private, a story, or requires login. We only support public posts and reels viewable without logging in.";
 
+const PUBLIC_EMBED_STRIPPED_MESSAGE =
+  'This reel is public, but Instagram did not expose the video file in public embed HTML. Our GraphQL fallback will retry automatically — if it still fails, try again later.';
+
 const UNAVAILABLE_MESSAGE =
   'This content could not be accessed. It may be private, a story, or temporarily unavailable. If you cannot view it in a logged-out browser tab, we cannot fetch it either.';
 
@@ -34,9 +37,9 @@ function createPublicScopeError(cause) {
   const msg = (cause?.message || '').toLowerCase();
 
   if (msg.includes('not available in public embed')) {
-    const err = new Error(SCOPE_MESSAGE);
+    const err = new Error(PUBLIC_EMBED_STRIPPED_MESSAGE);
     err.scopeLimited = true;
-    err.retryable = false;
+    err.retryable = true;
     err.reasonCode = REASON_CODES.PUBLIC_EMBED_VIDEO_STRIPPED;
     return err;
   }
@@ -79,6 +82,7 @@ module.exports = {
   assertPublicScope,
   createPublicScopeError,
   SCOPE_MESSAGE,
+  PUBLIC_EMBED_STRIPPED_MESSAGE,
   UNAVAILABLE_MESSAGE,
   REASON_CODES,
 };

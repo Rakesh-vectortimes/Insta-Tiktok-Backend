@@ -7,7 +7,9 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir -U yt-dlp
+RUN pip3 install --no-cache-dir -U yt-dlp curl_cffi
+
+ENV YTDLP_IMPERSONATE=chrome
 
 WORKDIR /app
 
