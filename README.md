@@ -111,6 +111,7 @@ Optional body/query params for video endpoints: `format` (`mp4` | `mp3`), `quali
 | `FRONTEND_URL` | `*` | CORS allowed origin |
 | `INSTAGRAM_COOKIES_BROWSER` | — | Browser name for yt-dlp cookie import |
 | `INSTAGRAM_SESSION_ID` | — | Instagram session ID fallback |
+| `COOKIE_FILE_PATH` | — | Custom path to cookies file (e.g. `/app/data/cookies.txt` on Railway) |
 
 ## Project Structure
 
@@ -129,6 +130,39 @@ src/
     ├── cleanup.js      # Temp file cleanup
     ├── cookies.js      # Cookie file handling
     └── mediaOptions.js # Format/quality parsing
+```
+
+## Deployment
+
+This backend requires **yt-dlp** and **ffmpeg** as system binaries, so it must run on a platform that supports Docker (not Vercel/Netlify).
+
+**Recommended:** [Railway](https://railway.app) or [Render](https://render.com) — both auto-detect the included `Dockerfile`.
+
+### Railway
+
+1. Sign in at Railway with GitHub → **New Project** → **Deploy from GitHub repo** → select this repo
+2. Add environment variables:
+   - `PORT=4000`
+   - `FRONTEND_URL=https://your-frontend-domain.com`
+   - `COOKIE_FILE_PATH=/app/data/cookies.txt` (after volume setup)
+3. **Settings** → **Networking** → **Generate Domain**
+4. **Settings** → **Volumes** → mount at `/app/data`
+5. Open the service shell and create cookies: `cat > /app/data/cookies.txt`, paste exported cookies, then `Ctrl+D`
+
+Verify:
+
+```bash
+curl https://your-app.up.railway.app/health
+```
+
+### Instagram cookies on the server
+
+There is no browser on the server, so `INSTAGRAM_COOKIES_BROWSER` will not work in production. Upload `cookies.txt` via a Railway volume (recommended) — **never commit cookie files** to this public repo.
+
+Update your frontend env:
+
+```env
+VITE_API_URL=https://your-app.up.railway.app
 ```
 
 ## License

@@ -5,6 +5,9 @@ const PROJECT_ROOT = path.join(__dirname, '../..');
 const COOKIE_CANDIDATES = ['cookies.txt', 'www.instagram.com_cookies.txt'];
 
 function resolveCookieFile() {
+  if (process.env.COOKIE_FILE_PATH) {
+    return process.env.COOKIE_FILE_PATH;
+  }
   for (const name of COOKIE_CANDIDATES) {
     const file = path.join(PROJECT_ROOT, name);
     if (fs.existsSync(file)) return file;
@@ -34,6 +37,9 @@ function loadCookieHeader(domain = 'instagram.com') {
 }
 
 function hasCookieFile() {
+  if (process.env.COOKIE_FILE_PATH) {
+    return fs.existsSync(process.env.COOKIE_FILE_PATH);
+  }
   return COOKIE_CANDIDATES.some((name) => fs.existsSync(path.join(PROJECT_ROOT, name)));
 }
 
