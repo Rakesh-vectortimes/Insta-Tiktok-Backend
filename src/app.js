@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { writeCookiesFromEnv, hasCookieFile, getCookieFile } = require('./utils/cookies');
+const { writeCookiesFromEnv, hasCookieFile, getCookieFile, getCookieExpiryInfo } = require('./utils/cookies');
 
 writeCookiesFromEnv();
 
@@ -58,12 +58,28 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({
+  const cookiesPresent = hasCookieFile();
+  const expiryInfo = cookiesPresent ? getCookieExpiryInfo() : null;
+
+  const response = {
     status: 'ok',
-    instagramCookies: hasCookieFile()
+    instagramCookies: cookiesPresent
       ? path.basename(getCookieFile())
       : 'not configured',
-  });
+  };
+
+  if (expiryInfo) {
+    response.cookieExpiry = expiryInfo;
+
+    if (expiryInfo.isExpired) {
+      response.warning =
+        'Instagram session has expired. Re-export cookies.txt and update COOKIES_TXT_CONTENT.';
+    } else if (expiryInfo.isExpiringSoon) {
+      response.warning = `Instagram session expires in ${expiryInfo.daysRemaining} day(s). Consider refreshing soon.`;
+    }
+  }
+
+  res.json(response);
 });
 
 // Clean temp files every 30 minutes
@@ -74,6 +90,16 @@ app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
   if (hasCookieFile()) {
     console.log(`🍪 Instagram cookies loaded: ${path.basename(getCookieFile())}`);
+    const expiry = getCookieExpiryInfo();
+    if (expiry) {
+      if (expiry.isExpired) {
+        console.warn('⚠️  Instagram session has EXPIRED — re-export cookies.txt');
+      } else if (expiry.isExpiringSoon) {
+        console.warn(`⚠️  Instagram session expires in ${expiry.daysRemaining} days`);
+      } else {
+        console.log(`✅ Instagram session valid for ${expiry.daysRemaining} more days`);
+      }
+    }
   } else {
     console.warn('⚠️  No Instagram cookies found — add cookies.txt locally or set COOKIES_TXT_CONTENT in Railway Variables');
   }

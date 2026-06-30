@@ -61,10 +61,53 @@ function hasCookieFile() {
   return fs.existsSync(resolveCookieFile());
 }
 
+function getCookieExpiryInfo() {
+  const cookieFile = resolveCookieFile();
+  if (!fs.existsSync(cookieFile)) return null;
+
+  const lines = fs.readFileSync(cookieFile, 'utf8').split('\n');
+  let earliestExpiry = null;
+  let sessionExpiry = null;
+
+  for (const line of lines) {
+    if (line.startsWith('#') || !line.trim()) continue;
+    const parts = line.split('\t');
+    if (parts.length < 7) continue;
+
+    const expiryUnix = parseInt(parts[4], 10);
+    const cookieName = parts[5].trim();
+
+    if (!expiryUnix || expiryUnix === 0) continue;
+
+    if (cookieName === 'sessionid') {
+      sessionExpiry = expiryUnix;
+    }
+
+    if (earliestExpiry === null || expiryUnix < earliestExpiry) {
+      earliestExpiry = expiryUnix;
+    }
+  }
+
+  if (!sessionExpiry && !earliestExpiry) return null;
+
+  const targetExpiry = sessionExpiry || earliestExpiry;
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const secondsRemaining = targetExpiry - nowUnix;
+  const daysRemaining = Math.floor(secondsRemaining / 86400);
+
+  return {
+    expiresAt: new Date(targetExpiry * 1000).toISOString(),
+    daysRemaining,
+    isExpired: secondsRemaining <= 0,
+    isExpiringSoon: daysRemaining <= 7 && daysRemaining > 0,
+  };
+}
+
 module.exports = {
   getCookieFile,
   loadCookieHeader,
   hasCookieFile,
   writeCookiesFromEnv,
   getCookieWritePath,
+  getCookieExpiryInfo,
 };
