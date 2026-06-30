@@ -16,6 +16,7 @@ const swaggerSpec = require('./config/swagger');
 const instagramRoutes = require('./routes/instagram');
 const tiktokRoutes = require('./routes/tiktok');
 const jobRoutes = require('./routes/jobs');
+const analyzeApiRoutes = require('./routes/analyzeApi');
 const { cleanupTemp } = require('./utils/cleanup');
 const { globalLimiter, getActiveCount } = require('./utils/globalLimiter');
 const { cacheStats } = require('./services/cache');
@@ -24,6 +25,7 @@ const { poolStats } = require('./services/sessionPool');
 const { redisStatus } = require('./services/redis');
 const { queueStats } = require('./services/jobQueue');
 const { storageStatus } = require('./services/storage');
+const { videoCacheStats } = require('./services/videoCache');
 const path = require('path');
 
 const app = express();
@@ -43,6 +45,9 @@ const limiter = rateLimit({
 });
 
 app.use('/api/', globalLimiter);
+
+app.use('/api', analyzeApiRoutes);
+
 app.use('/api/', limiter);
 
 app.use('/api/instagram', instagramRoutes);
@@ -56,6 +61,11 @@ app.get('/', (req, res) => {
     docs: '/api-docs',
     health: '/health',
     endpoints: {
+      analyze: {
+        submit: 'POST /api/analyze',
+        status: 'GET /api/status/:jobId',
+        prewarm: 'POST /api/prewarm',
+      },
       instagram: {
         reel: 'POST /api/instagram/reel',
         post: 'POST /api/instagram/post',
@@ -88,6 +98,7 @@ app.get('/health', async (req, res) => {
     activeRequests: getActiveCount(),
     redis: await redisStatus(),
     cache: cacheStats(),
+    videoCache: videoCacheStats(),
     storage: storageStatus(),
     sessionPool: await poolStats(),
     jobQueue: await queueStats(),

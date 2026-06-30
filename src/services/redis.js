@@ -102,6 +102,17 @@ async function redisHSet(key, data) {
   }
 }
 
+async function redisDel(key) {
+  const redis = getRedis();
+  if (!redis || redis.status !== 'ready') return false;
+  try {
+    await redis.del(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function redisStatus() {
   if (!isRedisEnabled()) {
     return { enabled: false, connected: false, mode: 'memory' };
@@ -140,6 +151,7 @@ module.exports = {
   redisExpire,
   redisHGetAll,
   redisHSet,
+  redisDel,
   redisStatus,
   memoryGet,
   memorySet,

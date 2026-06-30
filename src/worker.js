@@ -4,9 +4,10 @@ const { Worker } = require('bullmq');
 const { connectRedis, getRedis } = require('./services/redis');
 const { initSessionPool } = require('./services/sessionPool');
 const { writeCookiesFromEnv } = require('./utils/cookies');
-const { analyzeUrl } = require('./services/analyzeUrl');
+const { processDownloadJob } = require('./services/downloadProcessor');
+const { clearJobLock } = require('./services/videoCache');
+const { QUEUE_NAME } = require('./services/jobQueue');
 
-const QUEUE_NAME = 'analyze';
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
 
 async function startWorker() {
@@ -22,8 +23,8 @@ async function startWorker() {
   const worker = new Worker(
     QUEUE_NAME,
     async (job) => {
-      const { url, mode = 'reel', sessionid } = job.data;
-      return analyzeUrl(url, { mode, sessionid, fromWorker: true });
+      const { url, hash } = job.data;
+      return processDownloadJob({ url, hash });
     },
     {
       connection: getRedis(),
@@ -35,11 +36,14 @@ async function startWorker() {
     console.log(`[worker] Job ${job.id} completed`);
   });
 
-  worker.on('failed', (job, err) => {
+  worker.on('failed', async (job, err) => {
     console.error(`[worker] Job ${job?.id} failed:`, err.message);
+    if (job?.data?.hash) {
+      await clearJobLock(job.data.hash);
+    }
   });
 
-  console.log(`[worker] BullMQ worker running (concurrency=${concurrency})`);
+  console.log(`[worker] ${QUEUE_NAME} worker running (concurrency=${concurrency})`);
 }
 
 startWorker().catch((err) => {

@@ -3,11 +3,19 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
+function getAccessKeyId() {
+  return process.env.R2_ACCESS_KEY_ID || process.env.R2_ACCESS_KEY;
+}
+
+function getSecretAccessKey() {
+  return process.env.R2_SECRET_ACCESS_KEY || process.env.R2_SECRET_KEY;
+}
+
 function isStorageEnabled() {
   return Boolean(
     process.env.R2_BUCKET &&
-      process.env.R2_ACCESS_KEY_ID &&
-      process.env.R2_SECRET_ACCESS_KEY &&
+      getAccessKeyId() &&
+      getSecretAccessKey() &&
       process.env.R2_PUBLIC_URL
   );
 }
@@ -21,8 +29,8 @@ function getS3Client() {
     region: 'auto',
     endpoint,
     credentials: {
-      accessKeyId: process.env.R2_ACCESS_KEY_ID,
-      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+      accessKeyId: getAccessKeyId(),
+      secretAccessKey: getSecretAccessKey(),
     },
   });
 }
@@ -39,6 +47,24 @@ function guessContentType(url = '', ext = '') {
 function buildObjectKey(mediaUrl, ext = 'mp4') {
   const safeExt = ext.replace(/^\./, '') || 'bin';
   return `media/${new Date().toISOString().slice(0, 10)}/${uuidv4()}.${safeExt}`;
+}
+
+async function uploadToR2(fileName, buffer, ext = 'mp4') {
+  const client = getS3Client();
+  const contentType = guessContentType('', ext);
+
+  await client.send(
+    new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: fileName,
+      Body: buffer,
+      ContentType: contentType,
+      CacheControl: 'public, max-age=86400',
+    })
+  );
+
+  const base = process.env.R2_PUBLIC_URL.replace(/\/$/, '');
+  return `${base}/${fileName}`;
 }
 
 async function uploadBuffer(buffer, key, contentType) {
@@ -100,6 +126,7 @@ function storageStatus() {
 
 module.exports = {
   isStorageEnabled,
+  uploadToR2,
   mirrorMediaUrl,
   enrichWithCdn,
   storageStatus,

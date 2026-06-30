@@ -178,6 +178,25 @@ Update your frontend env:
 VITE_API_URL=https://your-app.up.railway.app
 ```
 
+### Primary API (production pipeline)
+
+```text
+POST /api/analyze        → cache check → dedupe → queue job
+GET  /api/status/:jobId  → poll job result + CDN URL
+POST /api/prewarm        → queue trending URLs ahead of time
+```
+
+**Flow:**
+
+```text
+User → POST /api/analyze → Redis cache (video:{hash})
+  → hit: return CDN URL immediately
+  → miss: dedupe lock → BullMQ worker
+    → public extractor (no session)
+    → session fallback if needed
+    → upload to R2 → cache CDN URL (24h)
+```
+
 ### Production scale (50k+ users)
 
 For high traffic, add these services:
