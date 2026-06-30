@@ -178,6 +178,15 @@ Update your frontend env:
 VITE_API_URL=https://your-app.up.railway.app
 ```
 
+### Product scope (public-only by default)
+
+This backend matches the **FastDL model**: no login, no cookies, public content only.
+
+**Supported:** public Instagram posts/reels, public TikTok videos  
+**Not supported (default):** private accounts, stories, anything not viewable in a logged-out browser tab
+
+Set `ALLOW_SESSION_FALLBACK=true` only if you want opt-in session support later (stories/private).
+
 ### Primary API (production pipeline)
 
 ```text

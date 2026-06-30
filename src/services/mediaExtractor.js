@@ -3,10 +3,10 @@ const { getReel, getPost, normalizePostUrl, pickVideoByQuality } = require('./ig
 const { getInfo } = require('./ytdlp');
 const { parseUrl } = require('./urlParser');
 const {
-  acquireSession,
-  recordSessionSuccess,
-  recordSessionFailure,
-} = require('./sessionPool');
+  isSessionFallbackEnabled,
+  assertPublicScope,
+  createPublicScopeError,
+} = require('../utils/scopeErrors');
 
 const PUBLIC_OPTS = { useCookies: false };
 
@@ -52,10 +52,9 @@ function pickMediaUrl(media) {
 
 async function extractWithoutSession(url) {
   const parsed = parseUrl(url);
+  if (!parsed) throw new Error('Unsupported or invalid URL');
 
-  if (!parsed) {
-    throw new Error('Unsupported or invalid URL');
-  }
+  assertPublicScope(url);
 
   if (parsed.platform === 'instagram') {
     const isReel = parsed.type === 'reel';
@@ -91,6 +90,11 @@ async function extractWithoutSession(url) {
 }
 
 async function extractWithSessionFallback(url) {
+  if (!isSessionFallbackEnabled()) {
+    throw createPublicScopeError(new Error('private'));
+  }
+
+  const { acquireSession, recordSessionSuccess, recordSessionFailure } = require('./sessionPool');
   const parsed = parseUrl(url);
   if (!parsed) throw new Error('Unsupported or invalid URL');
 

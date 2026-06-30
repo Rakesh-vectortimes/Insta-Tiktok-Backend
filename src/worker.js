@@ -10,9 +10,15 @@ const { QUEUE_NAME } = require('./services/jobQueue');
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
 
+const { isSessionFallbackEnabled } = require('./services/analyzeUrl');
+
 async function startWorker() {
-  writeCookiesFromEnv();
-  initSessionPool();
+  if (isSessionFallbackEnabled()) {
+    writeCookiesFromEnv();
+    initSessionPool();
+  } else {
+    console.log('[worker] Public-only mode — no session pool');
+  }
 
   const connected = await connectRedis();
   if (!connected) {

@@ -24,7 +24,8 @@ const {
   isDirectMediaUrl,
   normalizePostUrl,
 } = require('../services/igScraper');
-const { analyzeUrl } = require('../services/analyzeUrl');
+const PUBLIC_OPTS = { useCookies: false };
+const { analyzeUrl, isSessionFallbackEnabled } = require('../services/analyzeUrl');
 const {
   QUALITIES,
   FORMATS,
@@ -49,8 +50,9 @@ function sendAnalyzeError(res, err, fallbackStatus = 500) {
       retryable: true,
     });
   }
-  res.status(err.retryable ? 503 : fallbackStatus).json({
+  res.status(err.scopeLimited ? 422 : err.retryable ? 503 : fallbackStatus).json({
     error: err.message,
+    scopeLimited: err.scopeLimited || false,
     retryable: err.retryable || false,
     retryAfterSeconds: err.retryAfterSeconds,
     ...(err.details && { details: err.details }),
@@ -112,7 +114,7 @@ router.get('/reel/stream', async (req, res) => {
 
   // Try GraphQL scraper first (no rate limit)
   try {
-    const scraped = await getReel(url);
+    const scraped = await getReel(url, PUBLIC_OPTS);
     const videoUrl =
       pickVideoByQuality(scraped.videoVersions, media.quality) || scraped.url;
 
@@ -139,9 +141,18 @@ router.get('/reel/stream', async (req, res) => {
     return;
   } catch (scrapeErr) {
     console.error('[scraper]', scrapeErr.message);
+    if (!isSessionFallbackEnabled()) {
+      const { createPublicScopeError } = require('../utils/scopeErrors');
+      const err = createPublicScopeError(scrapeErr);
+      return res.status(422).json({
+        error: err.message,
+        scopeLimited: true,
+        retryable: err.retryable,
+      });
+    }
   }
 
-  // Fallback to yt-dlp
+  // Session fallback via yt-dlp (opt-in only)
   if (media.format === 'mp4') {
     return streamDownload(url, res, `${baseName}.mp4`, ytdlpFormat, ytdlpOpts);
   }
@@ -314,6 +325,16 @@ router.get('/dp/:username', async (req, res) => {
 router.post('/story', async (req, res) => {
   const { url, sessionid } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
+
+  if (!isSessionFallbackEnabled()) {
+    return res.status(422).json({
+      error:
+        'Stories are not supported in public-only mode. We only support public posts and reels viewable without logging in.',
+      scopeLimited: true,
+      retryable: false,
+    });
+  }
+
   if (!hasInstagramAuth(sessionid)) {
     return res.status(401).json({
       error: 'Instagram auth required. Pass sessionid, set INSTAGRAM_COOKIES_BROWSER, INSTAGRAM_SESSION_ID, or add cookies.txt.',

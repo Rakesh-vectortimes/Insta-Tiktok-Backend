@@ -1,12 +1,24 @@
 require('dotenv').config();
-const { writeCookiesFromEnv, hasCookieFile, getCookieFile, getCookieExpiryInfo } = require('./utils/cookies');
+const {
+  writeCookiesFromEnv,
+  hasCookieFile,
+  getCookieFile,
+  getCookieExpiryInfo,
+} = require('./utils/cookies');
+const { isSessionFallbackEnabled } = require('./services/analyzeUrl');
 
-writeCookiesFromEnv();
+if (isSessionFallbackEnabled()) {
+  writeCookiesFromEnv();
+} else {
+  console.log('[scope] Public-only mode — session cookies not loaded');
+}
 
 const { connectRedis } = require('./services/redis');
 const { initSessionPool } = require('./services/sessionPool');
 
-initSessionPool();
+if (isSessionFallbackEnabled()) {
+  initSessionPool();
+}
 
 const express = require('express');
 const cors = require('cors');
@@ -24,8 +36,9 @@ const { downloadQueue, sessionQueue } = require('./services/requestQueue');
 const { poolStats } = require('./services/sessionPool');
 const { redisStatus } = require('./services/redis');
 const { queueStats } = require('./services/jobQueue');
-const { storageStatus } = require('./services/storage');
 const { videoCacheStats } = require('./services/videoCache');
+const { inFlightStats } = require('./services/inFlightDedup');
+const { storageStatus } = require('./services/storage');
 const path = require('path');
 
 const app = express();
@@ -92,10 +105,14 @@ app.get('/health', async (req, res) => {
 
   const response = {
     status: 'ok',
-    instagramCookies: cookiesPresent
-      ? path.basename(getCookieFile())
-      : 'not configured',
+    mode: isSessionFallbackEnabled() ? 'public+session-fallback' : 'public-only',
+    instagramCookies: isSessionFallbackEnabled()
+      ? cookiesPresent
+        ? path.basename(getCookieFile())
+        : 'not configured'
+      : 'disabled (public-only)',
     activeRequests: getActiveCount(),
+    inFlight: inFlightStats(),
     redis: await redisStatus(),
     cache: cacheStats(),
     videoCache: videoCacheStats(),
@@ -108,7 +125,7 @@ app.get('/health', async (req, res) => {
     },
   };
 
-  if (expiryInfo) {
+  if (isSessionFallbackEnabled() && expiryInfo) {
     response.cookieExpiry = expiryInfo;
 
     if (expiryInfo.isExpired) {
@@ -120,7 +137,7 @@ app.get('/health', async (req, res) => {
   }
 
   const pool = response.sessionPool;
-  if (pool.total > 0 && pool.available === 0) {
+  if (isSessionFallbackEnabled() && pool.total > 0 && pool.available === 0) {
     response.warning =
       response.warning ||
       'All Instagram sessions are cooling down or over daily limit.';
@@ -135,8 +152,8 @@ const PORT = process.env.PORT || 4000;
 
 connectRedis().then(() => {
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Server running on port ${PORT}`);
-    if (hasCookieFile()) {
+    console.log(`✅ Server running on port ${PORT} (${isSessionFallbackEnabled() ? 'public + optional session' : 'public-only'})`);
+    if (isSessionFallbackEnabled() && hasCookieFile()) {
       console.log(`🍪 Instagram cookies loaded: ${path.basename(getCookieFile())}`);
       const expiry = getCookieExpiryInfo();
       if (expiry) {
@@ -148,8 +165,8 @@ connectRedis().then(() => {
           console.log(`✅ Instagram session valid for ${expiry.daysRemaining} more days`);
         }
       }
-    } else {
-      console.warn('⚠️  No Instagram cookies found — add cookies.txt locally or set COOKIES_TXT_CONTENT in Railway Variables');
+    } else if (isSessionFallbackEnabled()) {
+      console.warn('⚠️  Session fallback enabled but no cookies found');
     }
   });
 });

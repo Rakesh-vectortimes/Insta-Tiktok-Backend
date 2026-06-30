@@ -1,8 +1,5 @@
 const crypto = require('crypto');
-
-function normalizeUrl(url) {
-  return url.split('?')[0].replace(/\/$/, '');
-}
+const { normalizeUrl } = require('./normalizeUrl');
 
 function urlHash(url) {
   return crypto.createHash('sha256').update(normalizeUrl(url)).digest('hex');

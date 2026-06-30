@@ -10,6 +10,7 @@ const {
   downloadFileBuffer,
 } = require('./mediaExtractor');
 const { uploadToR2, isStorageEnabled } = require('./storage');
+const { isSessionFallbackEnabled, createPublicScopeError } = require('../utils/scopeErrors');
 
 async function processDownloadJob({ url, hash }) {
   const cached = await getVideoCache(hash);
@@ -21,6 +22,11 @@ async function processDownloadJob({ url, hash }) {
     media = await extractWithoutSession(url);
   } catch (publicErr) {
     console.warn(`[downloadProcessor] Public extract failed: ${publicErr.message}`);
+
+    if (!isSessionFallbackEnabled()) {
+      throw createPublicScopeError(publicErr);
+    }
+
     media = await extractWithSessionFallback(url);
   }
 

@@ -1,29 +1,19 @@
 const { getFromCache, saveCache } = require('./cache');
 const { getReel, getPost, normalizePostUrl } = require('./igScraper');
-const { getInfo } = require('./ytdlp');
 const { downloadQueue, sessionQueue } = require('./requestQueue');
-const { cooldownRemainingSeconds } = require('./sessionCooldown');
+const { dedupedRun } = require('./inFlightDedup');
+const { normalizeUrl } = require('../utils/normalizeUrl');
 const {
-  acquireSession,
-  recordSessionSuccess,
-  recordSessionFailure,
-} = require('./sessionPool');
+  isSessionFallbackEnabled,
+  assertPublicScope,
+  createPublicScopeError,
+} = require('../utils/scopeErrors');
 const { enrichWithCdn } = require('./storage');
-const { enqueueAnalyzeJob, getJobStatus } = require('./jobQueue');
+const { enqueueAnalyzeJob } = require('./jobQueue');
+const { cooldownRemainingSeconds, isInCooldown, triggerCooldown } = require('./sessionCooldown');
 
 const PUBLIC_OPTS = { useCookies: false };
 const SYNC_QUEUE_LIMIT = parseInt(process.env.SYNC_QUEUE_LIMIT || '200', 10);
-
-function isAuthError(err) {
-  const msg = (err.message || '').toLowerCase();
-  return (
-    msg.includes('login') ||
-    msg.includes('rate') ||
-    msg.includes('429') ||
-    msg.includes('blocked') ||
-    msg.includes('auth')
-  );
-}
 
 function mapYtDlpPostInfo(info) {
   if (info.entries?.length > 0) {
@@ -52,11 +42,92 @@ function mapYtDlpPostInfo(info) {
 function shouldForceAsync() {
   const stats = downloadQueue.stats();
   const sessionStats = sessionQueue.stats();
-  const totalQueued = stats.queued + sessionStats.queued + stats.running + sessionStats.running;
-  return totalQueued >= SYNC_QUEUE_LIMIT;
+  return stats.queued + sessionStats.queued + stats.running + sessionStats.running >= SYNC_QUEUE_LIMIT;
 }
 
-async function analyzeUrl(url, { mode = 'reel', sessionid, asyncOnly = false, fromWorker = false } = {}) {
+async function runPublicExtract(url, mode) {
+  const pageUrl = mode === 'post' ? normalizePostUrl(url) : url;
+  assertPublicScope(pageUrl);
+
+  if (mode === 'post') {
+    return getPost(pageUrl, PUBLIC_OPTS);
+  }
+  return getReel(url, PUBLIC_OPTS);
+}
+
+async function runSessionFallback(url, mode, sessionid) {
+  const { getInfo } = require('./ytdlp');
+  const { acquireSession, recordSessionSuccess, recordSessionFailure } = require('./sessionPool');
+
+  if (isInCooldown()) {
+    const err = new Error(
+      `Service is temporarily rate-limited. Try again in ${cooldownRemainingSeconds()}s.`
+    );
+    err.retryable = true;
+    throw err;
+  }
+
+  const pageUrl = mode === 'post' ? normalizePostUrl(url) : url;
+  const ytdlpArgs = mode === 'post' ? ['--format', 'b'] : [];
+  let poolSession = null;
+
+  try {
+    poolSession = await acquireSession();
+    const info = await sessionQueue.run(() =>
+      getInfo(pageUrl, ytdlpArgs, {
+        sessionid,
+        cookieFile: poolSession.cookiesPath,
+      })
+    );
+
+    await recordSessionSuccess(poolSession.id);
+
+    if (mode === 'post') {
+      return { ...mapYtDlpPostInfo(info), source: 'session', sessionId: poolSession.id };
+    }
+
+    return {
+      title: info.title || 'reel',
+      thumbnail: info.thumbnail,
+      duration: info.duration,
+      url: info.url,
+      ext: info.ext || 'mp4',
+      source: 'session',
+      sessionId: poolSession.id,
+    };
+  } catch (sessionErr) {
+    if (poolSession) {
+      await recordSessionFailure(poolSession.id, sessionErr.message);
+    }
+    if ((sessionErr.message || '').toLowerCase().includes('rate')) {
+      triggerCooldown(5, sessionErr.message);
+    }
+    const err = new Error('This content could not be accessed right now.');
+    err.retryable = true;
+    err.details = sessionErr.message;
+    throw err;
+  }
+}
+
+async function doAnalyze(url, { mode = 'reel', sessionid } = {}) {
+  try {
+    const result = await downloadQueue.run(() => runPublicExtract(url, mode));
+    const enriched = await enrichWithCdn({ ...result, source: 'public' });
+    return enriched;
+  } catch (publicErr) {
+    console.warn(`[analyzeUrl] Public extraction failed for ${url}: ${publicErr.message}`);
+
+    if (!isSessionFallbackEnabled()) {
+      throw createPublicScopeError(publicErr);
+    }
+
+    const result = await runSessionFallback(url, mode, sessionid);
+    return enrichWithCdn(result);
+  }
+}
+
+async function analyzeUrl(rawUrl, { mode = 'reel', sessionid, asyncOnly = false, fromWorker = false } = {}) {
+  const url = normalizeUrl(rawUrl);
   const pageUrl = mode === 'post' ? normalizePostUrl(url) : url;
   const cacheKey = `${mode}:${pageUrl}`;
 
@@ -69,7 +140,7 @@ async function analyzeUrl(url, { mode = 'reel', sessionid, asyncOnly = false, fr
     !fromWorker &&
     (asyncOnly || (process.env.FORCE_ASYNC_JOBS === 'true' && shouldForceAsync()))
   ) {
-    const jobId = await enqueueAnalyzeJob({ url, mode, sessionid });
+    const jobId = await enqueueAnalyzeJob({ url: pageUrl, mode, sessionid });
     return {
       status: 'queued',
       jobId,
@@ -78,74 +149,13 @@ async function analyzeUrl(url, { mode = 'reel', sessionid, asyncOnly = false, fr
     };
   }
 
-  const publicExtract =
-    mode === 'post'
-      ? () => getPost(pageUrl, PUBLIC_OPTS)
-      : () => getReel(url, PUBLIC_OPTS);
+  const result = await dedupedRun(cacheKey, async () => {
+    const analyzed = await doAnalyze(pageUrl, { mode, sessionid });
+    await saveCache(cacheKey, analyzed);
+    return analyzed;
+  });
 
-  try {
-    const result = await downloadQueue.run(publicExtract);
-    const enriched = await enrichWithCdn({ ...result, source: 'public' });
-    await saveCache(cacheKey, enriched);
-    return enriched;
-  } catch (publicErr) {
-    console.warn(`[analyzeUrl] Public extraction failed for ${pageUrl}: ${publicErr.message}`);
-
-    let poolSession = null;
-
-    try {
-      poolSession = await acquireSession();
-      const ytdlpArgs = mode === 'post' ? ['--format', 'b'] : [];
-
-      const info = await sessionQueue.run(() =>
-        getInfo(pageUrl, ytdlpArgs, {
-          sessionid,
-          cookieFile: poolSession.cookiesPath,
-        })
-      );
-
-      const result =
-        mode === 'post'
-          ? { ...mapYtDlpPostInfo(info), source: 'session', sessionId: poolSession.id }
-          : {
-              title: info.title || 'reel',
-              thumbnail: info.thumbnail,
-              duration: info.duration,
-              url: info.url,
-              ext: info.ext || 'mp4',
-              source: 'session',
-              sessionId: poolSession.id,
-            };
-
-      await recordSessionSuccess(poolSession.id);
-      const enriched = await enrichWithCdn(result);
-      await saveCache(cacheKey, enriched);
-      return enriched;
-    } catch (sessionErr) {
-      console.error(`[analyzeUrl] Session fallback failed for ${pageUrl}: ${sessionErr.message}`);
-
-      if (poolSession) {
-        await recordSessionFailure(poolSession.id, sessionErr.message);
-      }
-
-      if (!fromWorker && process.env.REDIS_URL && shouldForceAsync()) {
-        const jobId = await enqueueAnalyzeJob({ url, mode, sessionid });
-        const err = new Error('High traffic — job queued for background processing');
-        err.retryable = true;
-        err.jobId = jobId;
-        err.pollUrl = `/api/jobs/${jobId}`;
-        throw err;
-      }
-
-      const err = new Error(
-        'Could not extract media. The source may be blocking requests right now.'
-      );
-      err.retryable = true;
-      err.details = sessionErr.message;
-      err.retryAfterSeconds = cooldownRemainingSeconds() || 60;
-      throw err;
-    }
-  }
+  return result;
 }
 
-module.exports = { analyzeUrl, shouldForceAsync };
+module.exports = { analyzeUrl, shouldForceAsync, isSessionFallbackEnabled };
