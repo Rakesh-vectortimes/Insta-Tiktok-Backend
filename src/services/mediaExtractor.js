@@ -2,13 +2,7 @@ const axios = require('axios');
 const { getReel, getPost, normalizePostUrl, pickVideoByQuality } = require('./igScraper');
 const { getInfo } = require('./ytdlp');
 const { parseUrl } = require('./urlParser');
-const {
-  isSessionFallbackEnabled,
-  assertPublicScope,
-  createPublicScopeError,
-} = require('../utils/scopeErrors');
-
-const PUBLIC_OPTS = { useCookies: false };
+const { assertPublicScope } = require('../utils/scopeErrors');
 
 function pickMediaUrl(media) {
   if (media.type === 'carousel') {
@@ -59,8 +53,8 @@ async function extractWithoutSession(url) {
   if (parsed.platform === 'instagram') {
     const isReel = parsed.type === 'reel';
     const media = isReel
-      ? await getReel(url, PUBLIC_OPTS)
-      : await getPost(normalizePostUrl(url), PUBLIC_OPTS);
+      ? await getReel(url)
+      : await getPost(normalizePostUrl(url));
 
     const picked = pickMediaUrl(media);
     if (!picked.videoUrl) throw new Error('No media URL found');
@@ -89,60 +83,6 @@ async function extractWithoutSession(url) {
   throw new Error('Unsupported platform');
 }
 
-async function extractWithSessionFallback(url) {
-  if (!isSessionFallbackEnabled()) {
-    throw createPublicScopeError(new Error('private'));
-  }
-
-  const { acquireSession, recordSessionSuccess, recordSessionFailure } = require('./sessionPool');
-  const parsed = parseUrl(url);
-  if (!parsed) throw new Error('Unsupported or invalid URL');
-
-  const poolSession = await acquireSession();
-
-  try {
-    const formatArgs =
-      parsed.platform === 'instagram' && parsed.type !== 'reel'
-        ? ['--format', 'b']
-        : ['--format', 'bestvideo+bestaudio/best'];
-
-    const pageUrl =
-      parsed.platform === 'instagram' ? normalizePostUrl(url) : url;
-
-    const info = await getInfo(pageUrl, formatArgs, {
-      cookieFile: poolSession.cookiesPath,
-    });
-
-    await recordSessionSuccess(poolSession.id);
-
-    if (info.entries?.length) {
-      const entry = info.entries.find((e) => e.ext === 'mp4') || info.entries[0];
-      return {
-        videoUrl: entry.url,
-        title: info.title,
-        thumbnail: entry.thumbnail || info.thumbnail,
-        ext: entry.ext || 'mp4',
-        platform: parsed.platform,
-        extraction: 'session',
-        sessionId: poolSession.id,
-      };
-    }
-
-    return {
-      videoUrl: info.url,
-      title: info.title,
-      thumbnail: info.thumbnail,
-      ext: info.ext || 'mp4',
-      platform: parsed.platform,
-      extraction: 'session',
-      sessionId: poolSession.id,
-    };
-  } catch (err) {
-    await recordSessionFailure(poolSession.id, err.message);
-    throw err;
-  }
-}
-
 async function downloadFileBuffer(mediaUrl, referer = 'https://www.instagram.com/') {
   const response = await axios.get(mediaUrl, {
     responseType: 'arraybuffer',
@@ -157,6 +97,5 @@ async function downloadFileBuffer(mediaUrl, referer = 'https://www.instagram.com
 
 module.exports = {
   extractWithoutSession,
-  extractWithSessionFallback,
   downloadFileBuffer,
 };

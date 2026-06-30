@@ -1,7 +1,5 @@
 const { spawn } = require('child_process');
-const fs = require('fs');
 const path = require('path');
-const { getCookieFile, hasCookieFile } = require('../utils/cookies');
 
 const TEMP = path.join(__dirname, '../../temp');
 
@@ -16,7 +14,7 @@ function randomUA() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-function buildArgs(extraArgs = [], { sessionid, cookieFile, noCookies = false } = {}) {
+function buildArgs(extraArgs = []) {
   const args = [
     '--no-warnings',
     '--no-playlist',
@@ -29,29 +27,6 @@ function buildArgs(extraArgs = [], { sessionid, cookieFile, noCookies = false } 
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   ];
-
-  if (!noCookies) {
-    const resolvedCookieFile = cookieFile || getCookieFile();
-
-    if (cookieFile && fs.existsSync(cookieFile)) {
-      args.push('--cookies', cookieFile);
-      console.log('[yt-dlp] Using pool cookies:', path.basename(cookieFile));
-    } else if (hasCookieFile()) {
-      args.push('--cookies', resolvedCookieFile);
-      console.log('[yt-dlp] Using cookies:', path.basename(resolvedCookieFile));
-    } else if (process.env.INSTAGRAM_COOKIES_BROWSER) {
-      args.push('--cookies-from-browser', process.env.INSTAGRAM_COOKIES_BROWSER);
-      console.log('[yt-dlp] Using browser cookies:', process.env.INSTAGRAM_COOKIES_BROWSER);
-    } else {
-      const resolved = sessionid || process.env.INSTAGRAM_SESSION_ID;
-      if (resolved) {
-        args.push('--add-header', `Cookie:sessionid=${resolved}`);
-        console.log('[yt-dlp] Using sessionid from request/env');
-      } else {
-        console.warn('[yt-dlp] No cookies found — Instagram will likely rate-limit');
-      }
-    }
-  }
 
   return [...args, ...extraArgs];
 }
@@ -70,15 +45,6 @@ function formatYtdlpError(raw = '') {
     return 'Instagram requires login. Add cookies.txt to project root.';
   }
   return raw.trim() || 'yt-dlp failed';
-}
-
-function hasInstagramAuth(sessionid) {
-  return (
-    hasCookieFile() ||
-    !!process.env.INSTAGRAM_COOKIES_BROWSER ||
-    !!sessionid ||
-    !!process.env.INSTAGRAM_SESSION_ID
-  );
 }
 
 function getInfo(url, extraArgs = [], opts = {}) {
@@ -122,8 +88,8 @@ function downloadToFile(url, outputPath, extraArgs = [], opts = {}) {
 }
 
 function streamDownload(url, res, filename, extraArgs = [], opts = {}) {
-  const { contentType = 'video/mp4', sessionid } = opts;
-  const args = [...buildArgs(extraArgs, { sessionid }), '-o', '-', url];
+  const { contentType = 'video/mp4' } = opts;
+  const args = [...buildArgs(extraArgs), '-o', '-', url];
 
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.setHeader('Content-Type', contentType);
@@ -158,7 +124,6 @@ module.exports = {
   streamDownload,
   extractMp3,
   buildArgs,
-  hasInstagramAuth,
   formatYtdlpError,
   TEMP,
 };

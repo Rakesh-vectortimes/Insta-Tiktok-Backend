@@ -1,24 +1,7 @@
 require('dotenv').config();
-const {
-  writeCookiesFromEnv,
-  hasCookieFile,
-  getCookieFile,
-  getCookieExpiryInfo,
-} = require('./utils/cookies');
-const { isSessionFallbackEnabled } = require('./services/analyzeUrl');
-
-if (isSessionFallbackEnabled()) {
-  writeCookiesFromEnv();
-} else {
-  console.log('[scope] Public-only mode — session cookies not loaded');
-}
+console.log('[scope] Public-only mode — session fallback disabled');
 
 const { connectRedis } = require('./services/redis');
-const { initSessionPool } = require('./services/sessionPool');
-
-if (isSessionFallbackEnabled()) {
-  initSessionPool();
-}
 
 const express = require('express');
 const cors = require('cors');
@@ -32,14 +15,12 @@ const analyzeApiRoutes = require('./routes/analyzeApi');
 const { cleanupTemp } = require('./utils/cleanup');
 const { globalLimiter, getActiveCount } = require('./utils/globalLimiter');
 const { cacheStats } = require('./services/cache');
-const { downloadQueue, sessionQueue } = require('./services/requestQueue');
-const { poolStats } = require('./services/sessionPool');
+const { downloadQueue } = require('./services/requestQueue');
 const { redisStatus } = require('./services/redis');
 const { queueStats } = require('./services/jobQueue');
 const { videoCacheStats } = require('./services/videoCache');
 const { inFlightStats } = require('./services/inFlightDedup');
 const { storageStatus } = require('./services/storage');
-const path = require('path');
 
 const app = express();
 
@@ -100,48 +81,21 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', async (req, res) => {
-  const cookiesPresent = hasCookieFile();
-  const expiryInfo = cookiesPresent ? getCookieExpiryInfo() : null;
-
   const response = {
     status: 'ok',
-    mode: isSessionFallbackEnabled() ? 'public+session-fallback' : 'public-only',
-    instagramCookies: isSessionFallbackEnabled()
-      ? cookiesPresent
-        ? path.basename(getCookieFile())
-        : 'not configured'
-      : 'disabled (public-only)',
+    mode: 'public-only',
+    instagramCookies: 'disabled (public-only)',
     activeRequests: getActiveCount(),
     inFlight: inFlightStats(),
     redis: await redisStatus(),
     cache: cacheStats(),
     videoCache: videoCacheStats(),
     storage: storageStatus(),
-    sessionPool: await poolStats(),
     jobQueue: await queueStats(),
     queues: {
       download: downloadQueue.stats(),
-      session: sessionQueue.stats(),
     },
   };
-
-  if (isSessionFallbackEnabled() && expiryInfo) {
-    response.cookieExpiry = expiryInfo;
-
-    if (expiryInfo.isExpired) {
-      response.warning =
-        'Instagram session has expired. Re-export cookies.txt and update COOKIES_TXT_CONTENT.';
-    } else if (expiryInfo.isExpiringSoon) {
-      response.warning = `Instagram session expires in ${expiryInfo.daysRemaining} day(s). Consider refreshing soon.`;
-    }
-  }
-
-  const pool = response.sessionPool;
-  if (isSessionFallbackEnabled() && pool.total > 0 && pool.available === 0) {
-    response.warning =
-      response.warning ||
-      'All Instagram sessions are cooling down or over daily limit.';
-  }
 
   res.json(response);
 });
@@ -152,21 +106,6 @@ const PORT = process.env.PORT || 4000;
 
 connectRedis().then(() => {
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Server running on port ${PORT} (${isSessionFallbackEnabled() ? 'public + optional session' : 'public-only'})`);
-    if (isSessionFallbackEnabled() && hasCookieFile()) {
-      console.log(`🍪 Instagram cookies loaded: ${path.basename(getCookieFile())}`);
-      const expiry = getCookieExpiryInfo();
-      if (expiry) {
-        if (expiry.isExpired) {
-          console.warn('⚠️  Instagram session has EXPIRED — re-export cookies.txt');
-        } else if (expiry.isExpiringSoon) {
-          console.warn(`⚠️  Instagram session expires in ${expiry.daysRemaining} days`);
-        } else {
-          console.log(`✅ Instagram session valid for ${expiry.daysRemaining} more days`);
-        }
-      }
-    } else if (isSessionFallbackEnabled()) {
-      console.warn('⚠️  Session fallback enabled but no cookies found');
-    }
+    console.log(`✅ Server running on port ${PORT} (public-only)`);
   });
 });

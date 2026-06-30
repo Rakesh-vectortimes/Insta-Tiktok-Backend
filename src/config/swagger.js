@@ -7,7 +7,7 @@ const options = {
       title: 'Instagram & TikTok Downloader API',
       version: '1.0.0',
       description:
-        'API for downloading Instagram reels, posts, stories, profile pictures, and TikTok videos, audio, and slideshows. Requires **yt-dlp** and **ffmpeg** on the server.',
+        'Public-only API for downloading Instagram reels, posts, profile pictures, and TikTok videos, audio, and slideshows. No session cookies or login required. Private accounts and stories are not supported.',
     },
     servers: [
       { url: 'http://localhost:4000', description: 'Local development' },
@@ -23,6 +23,18 @@ const options = {
           type: 'object',
           properties: {
             error: { type: 'string', example: 'URL required' },
+            scopeLimited: { type: 'boolean', example: false },
+            retryable: { type: 'boolean', example: false },
+            reasonCode: {
+              type: 'string',
+              enum: [
+                'private_or_story',
+                'public_embed_video_stripped',
+                'rate_limited',
+                'stories_not_supported',
+              ],
+            },
+            details: { type: 'string' },
           },
         },
         UrlBody: {
@@ -55,10 +67,6 @@ const options = {
               format: 'uri',
               example: 'https://www.instagram.com/reel/ABC123/',
             },
-            sessionid: {
-              type: 'string',
-              description: 'Optional — only needed for private content or when Instagram rate-limits anonymous requests',
-            },
             format: {
               type: 'string',
               enum: ['mp4', 'mp3'],
@@ -75,16 +83,12 @@ const options = {
         },
         StoryBody: {
           type: 'object',
-          required: ['url', 'sessionid'],
+          required: ['url'],
           properties: {
             url: {
               type: 'string',
               format: 'uri',
               example: 'https://www.instagram.com/stories/username/1234567890/',
-            },
-            sessionid: {
-              type: 'string',
-              description: 'Instagram sessionid cookie value',
             },
           },
         },
@@ -225,7 +229,11 @@ const options = {
                 'application/json': {
                   schema: {
                     type: 'object',
-                    properties: { status: { type: 'string', example: 'ok' } },
+                    properties: {
+                      status: { type: 'string', example: 'ok' },
+                      mode: { type: 'string', example: 'public-only' },
+                      instagramCookies: { type: 'string', example: 'disabled (public-only)' },
+                    },
                   },
                 },
               },
@@ -237,7 +245,7 @@ const options = {
         post: {
           tags: ['Instagram'],
           summary: 'Get reel metadata',
-          description: 'Tries GraphQL scraper first (no auth), falls back to yt-dlp. sessionid optional.',
+          description: 'Public-only extraction via Instagram embed HTML. No session or cookies required.',
           requestBody: {
             required: true,
             content: {
@@ -279,12 +287,6 @@ const options = {
               in: 'query',
               schema: { type: 'string', enum: ['360', '720', '1080', '360p', '720p', '1080p'], default: '720' },
             },
-            {
-              name: 'sessionid',
-              in: 'query',
-              schema: { type: 'string' },
-              description: 'Optional Instagram sessionid cookie',
-            },
           ],
           responses: {
             200: {
@@ -303,7 +305,7 @@ const options = {
         post: {
           tags: ['Instagram'],
           summary: 'Get post metadata',
-          description: 'Public posts via GraphQL scraper first, yt-dlp fallback. sessionid optional.',
+          description: 'Public-only extraction via Instagram embed HTML. No session or cookies required.',
           requestBody: {
             required: true,
             content: {
@@ -369,35 +371,40 @@ const options = {
       '/api/instagram/story': {
         post: {
           tags: ['Instagram'],
-          summary: 'Get story metadata',
-          description: 'Stories require login. Pass sessionid or set INSTAGRAM_COOKIES_BROWSER / cookies.txt.',
+          summary: 'Get story metadata (not supported)',
+          description: 'Stories are not supported in public-only mode.',
           requestBody: {
             required: true,
             content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  required: ['url'],
-                  properties: {
-                    url: { type: 'string', format: 'uri' },
-                    sessionid: {
-                      type: 'string',
-                      description: 'Required unless INSTAGRAM_COOKIES_BROWSER or cookies.txt is configured',
-                    },
-                  },
-                },
-              },
+              'application/json': { schema: { $ref: '#/components/schemas/StoryBody' } },
             },
           },
           responses: {
-            200: {
-              description: 'Story metadata',
-              content: {
-                'application/json': { schema: { $ref: '#/components/schemas/ReelResponse' } },
-              },
+            422: {
+              description: 'Stories not supported',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
             },
-            401: { description: 'No Instagram auth configured (stories require login)' },
-            500: { description: 'Fetch failed' },
+          },
+        },
+      },
+      '/api/instagram/story/stream': {
+        get: {
+          tags: ['Instagram'],
+          summary: 'Download story (not supported)',
+          description: 'Stories are not supported in public-only mode.',
+          parameters: [
+            {
+              name: 'url',
+              in: 'query',
+              required: true,
+              schema: { type: 'string', format: 'uri' },
+            },
+          ],
+          responses: {
+            422: {
+              description: 'Stories not supported',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+            },
           },
         },
       },

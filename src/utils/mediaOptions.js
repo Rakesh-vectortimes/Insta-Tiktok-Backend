@@ -39,7 +39,7 @@ function getAudioBitrate(quality) {
   return AUDIO_BITRATE[quality] || '192k';
 }
 
-function buildDownloadLinks(basePath, { url, sessionid }) {
+function buildDownloadLinks(basePath, { url }) {
   const downloads = [];
 
   for (const format of FORMATS) {
@@ -49,8 +49,6 @@ function buildDownloadLinks(basePath, { url, sessionid }) {
         format,
         quality: String(quality),
       });
-      if (sessionid) params.set('sessionid', sessionid);
-
       downloads.push({
         format,
         quality,

@@ -10,10 +10,9 @@ const {
   downloadToFile,
   streamDownload,
   extractMp3,
-  hasInstagramAuth,
   TEMP,
 } = require('../services/ytdlp');
-const { loadCookieHeader } = require('../utils/cookies');
+const { createPublicScopeError } = require('../utils/scopeErrors');
 const {
   getReel,
   getPost,
@@ -24,8 +23,7 @@ const {
   isDirectMediaUrl,
   normalizePostUrl,
 } = require('../services/igScraper');
-const PUBLIC_OPTS = { useCookies: false };
-const { analyzeUrl, isSessionFallbackEnabled } = require('../services/analyzeUrl');
+const { analyzeUrl } = require('../services/analyzeUrl');
 const {
   QUALITIES,
   FORMATS,
@@ -62,7 +60,7 @@ function sendAnalyzeError(res, err, fallbackStatus = 500) {
 
 // ── Reel download (stream directly) ──────────────────────────────────────────
 router.post('/reel', async (req, res) => {
-  const { url, sessionid, format, quality } = req.body;
+  const { url, format, quality } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   let media;
@@ -72,13 +70,13 @@ router.post('/reel', async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
 
-  const downloads = buildDownloadLinks('/api/instagram/reel/stream', { url, sessionid });
+  const downloads = buildDownloadLinks('/api/instagram/reel/stream', { url });
   const selected = downloads.find(
     (d) => d.format === media.format && d.quality === media.quality
   );
 
   try {
-    const scraped = await analyzeUrl(url, { mode: 'reel', sessionid });
+    const scraped = await analyzeUrl(url, { mode: 'reel' });
     if (scraped.status === 'queued') {
       return res.status(202).json(scraped);
     }
@@ -99,7 +97,7 @@ router.post('/reel', async (req, res) => {
 });
 
 router.get('/reel/stream', async (req, res) => {
-  const { url, sessionid } = req.query;
+  const { url } = req.query;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   let media;
@@ -111,11 +109,10 @@ router.get('/reel/stream', async (req, res) => {
 
   const baseName = `reel_${Date.now()}_${media.quality}p`;
   const ytdlpFormat = ['--format', getVideoFormatString(media.quality)];
-  const ytdlpOpts = { sessionid };
 
   // Try GraphQL scraper first (no rate limit)
   try {
-    const scraped = await getReel(url, PUBLIC_OPTS);
+    const scraped = await getReel(url);
     const videoUrl =
       pickVideoByQuality(scraped.videoVersions, media.quality) || scraped.url;
 
@@ -142,54 +139,23 @@ router.get('/reel/stream', async (req, res) => {
     return;
   } catch (scrapeErr) {
     console.error('[scraper]', scrapeErr.message);
-    if (!isSessionFallbackEnabled()) {
-      const { createPublicScopeError } = require('../utils/scopeErrors');
-      const err = createPublicScopeError(scrapeErr);
-      return res.status(422).json({
-        error: err.message,
-        scopeLimited: true,
-        retryable: err.retryable,
-        ...(err.reasonCode && { reasonCode: err.reasonCode }),
-      });
-    }
-  }
-
-  // Session fallback via yt-dlp (opt-in only)
-  if (media.format === 'mp4') {
-    return streamDownload(url, res, `${baseName}.mp4`, ytdlpFormat, ytdlpOpts);
-  }
-
-  const id = uuidv4();
-  const videoPath = path.join(TEMP, `${id}.mp4`);
-  const audioPath = path.join(TEMP, `${id}.mp3`);
-
-  try {
-    await downloadToFile(url, videoPath, ytdlpFormat, ytdlpOpts);
-    await extractMp3(videoPath, audioPath, getAudioBitrate(media.quality));
-
-    res.setHeader('Content-Disposition', `attachment; filename="${baseName}.mp3"`);
-    res.setHeader('Content-Type', 'audio/mpeg');
-
-    const stream = fs.createReadStream(audioPath);
-    stream.pipe(res);
-    stream.on('close', () => {
-      fs.unlink(videoPath, () => {});
-      fs.unlink(audioPath, () => {});
+    const err = createPublicScopeError(scrapeErr);
+    return res.status(422).json({
+      error: err.message,
+      scopeLimited: true,
+      retryable: err.retryable,
+      ...(err.reasonCode && { reasonCode: err.reasonCode }),
     });
-  } catch (err) {
-    fs.unlink(videoPath, () => {});
-    fs.unlink(audioPath, () => {});
-    res.status(500).json({ error: err.message });
   }
 });
 
 // ── Post (single image, video, or carousel) ───────────────────────────────────
 router.post('/post', async (req, res) => {
-  const { url, sessionid } = req.body;
+  const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   try {
-    const result = await analyzeUrl(url, { mode: 'post', sessionid });
+    const result = await analyzeUrl(url, { mode: 'post' });
     if (result.status === 'queued') {
       return res.status(202).json(result);
     }
@@ -202,7 +168,7 @@ router.post('/post', async (req, res) => {
 
 // Carousel ZIP download
 router.post('/carousel/zip', async (req, res) => {
-  const { url, urls, sessionid } = req.body;
+  const { url, urls } = req.body;
   let items = urls;
 
   if ((!items || !items.length) && url) {
@@ -214,17 +180,13 @@ router.post('/carousel/zip', async (req, res) => {
         items = [{ url: post.url, ext: post.ext || (post.type === 'video' ? 'mp4' : 'jpg') }];
       }
     } catch (scrapeErr) {
-      console.error('[scraper]', scrapeErr.message);
-      try {
-        const info = await getInfo(normalizePostUrl(url), ['--format', 'b'], { sessionid });
-        if (info.entries?.length) {
-          items = info.entries.map((e) => ({ url: e.url, ext: e.ext || 'jpg' }));
-        } else if (info.url) {
-          items = [{ url: info.url, ext: info.ext || 'jpg' }];
-        }
-      } catch (ytErr) {
-        return res.status(500).json({ error: ytErr.message });
-      }
+      const err = createPublicScopeError(scrapeErr);
+      return res.status(422).json({
+        error: err.message,
+        scopeLimited: true,
+        retryable: err.retryable,
+        ...(err.reasonCode && { reasonCode: err.reasonCode }),
+      });
     }
   }
 
@@ -240,7 +202,7 @@ router.post('/carousel/zip', async (req, res) => {
     if (isDirectMediaUrl(item.url)) {
       return downloadDirect(item.url, filePath);
     }
-    return downloadToFile(item.url, filePath, ['--format', 'b'], { sessionid });
+    return downloadToFile(item.url, filePath, ['--format', 'b']);
   };
 
   try {
@@ -304,7 +266,6 @@ router.get('/dp/:username', async (req, res) => {
         headers: {
           'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
           'x-ig-app-id': '936619743392459',
-          ...(loadCookieHeader() ? { Cookie: loadCookieHeader() } : {}),
         }
       }
     );
@@ -323,48 +284,23 @@ router.get('/dp/:username', async (req, res) => {
   }
 });
 
-// ── Stories (requires session cookie) ─────────────────────────────────────────
+// ── Stories (not supported in public-only mode) ───────────────────────────────
 router.post('/story', async (req, res) => {
-  const { url, sessionid } = req.body;
-  if (!url) return res.status(400).json({ error: 'URL required' });
-
-  if (!isSessionFallbackEnabled()) {
-    return res.status(422).json({
-      error:
-        'Stories are not supported in public-only mode. We only support public posts and reels viewable without logging in.',
-      scopeLimited: true,
-      retryable: false,
-    });
-  }
-
-  if (!hasInstagramAuth(sessionid)) {
-    return res.status(401).json({
-      error: 'Instagram auth required. Pass sessionid, set INSTAGRAM_COOKIES_BROWSER, INSTAGRAM_SESSION_ID, or add cookies.txt.',
-    });
-  }
-
-  try {
-    const info = await getInfo(url, [], { sessionid });
-    const streamQuery = new URLSearchParams({ url });
-    const resolvedSession = sessionid || process.env.INSTAGRAM_SESSION_ID;
-    if (resolvedSession) streamQuery.set('sessionid', resolvedSession);
-
-    res.json({
-      title: info.title,
-      thumbnail: info.thumbnail,
-      downloadUrl: `/api/instagram/story/stream?${streamQuery.toString()}`,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  res.status(422).json({
+    error: "Stories require an active Instagram login and aren't supported in public-only mode.",
+    scopeLimited: true,
+    retryable: false,
+    reasonCode: 'stories_not_supported',
+  });
 });
 
 router.get('/story/stream', async (req, res) => {
-  const { url, sessionid } = req.query;
-  if (!url) return res.status(400).json({ error: 'URL required' });
-
-  const baseName = `story_${Date.now()}.mp4`;
-  return streamDownload(url, res, baseName, [], { sessionid });
+  res.status(422).json({
+    error: "Stories require an active Instagram login and aren't supported in public-only mode.",
+    scopeLimited: true,
+    retryable: false,
+    reasonCode: 'stories_not_supported',
+  });
 });
 
 module.exports = router;

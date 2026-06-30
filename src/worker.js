@@ -2,23 +2,14 @@ require('dotenv').config();
 
 const { Worker } = require('bullmq');
 const { connectRedis, getRedis } = require('./services/redis');
-const { initSessionPool } = require('./services/sessionPool');
-const { writeCookiesFromEnv } = require('./utils/cookies');
 const { processDownloadJob } = require('./services/downloadProcessor');
 const { clearJobLock } = require('./services/videoCache');
 const { QUEUE_NAME } = require('./services/jobQueue');
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
 
-const { isSessionFallbackEnabled } = require('./services/analyzeUrl');
-
 async function startWorker() {
-  if (isSessionFallbackEnabled()) {
-    writeCookiesFromEnv();
-    initSessionPool();
-  } else {
-    console.log('[worker] Public-only mode — no session pool');
-  }
+  console.log('[worker] Public-only mode');
 
   const connected = await connectRedis();
   if (!connected) {

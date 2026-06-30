@@ -5,11 +5,11 @@ const { enqueueAnalyzeJob, getJobStatus } = require('../services/jobQueue');
 const router = express.Router();
 
 router.post('/analyze', async (req, res) => {
-  const { url, mode = 'reel', sessionid } = req.body;
+  const { url, mode = 'reel' } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   try {
-    const jobId = await enqueueAnalyzeJob({ url, mode, sessionid });
+    const jobId = await enqueueAnalyzeJob({ url, mode });
     res.status(202).json({
       status: 'queued',
       jobId,

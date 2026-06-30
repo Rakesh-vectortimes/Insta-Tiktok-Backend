@@ -13,7 +13,7 @@ const REASON_CODES = {
 };
 
 function isSessionFallbackEnabled() {
-  return process.env.ALLOW_SESSION_FALLBACK === 'true';
+  return false;
 }
 
 function assertPublicScope(url) {

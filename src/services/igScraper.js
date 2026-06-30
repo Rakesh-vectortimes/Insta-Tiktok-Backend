@@ -1,6 +1,4 @@
 const axios = require('axios');
-const path = require('path');
-const { loadCookieHeader, hasCookieFile } = require('../utils/cookies');
 
 const USER_AGENTS = [
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
@@ -17,30 +15,13 @@ function randomUA() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-function igHeaders({ useCookies = true, cookieFile, cookieHeader } = {}) {
-  const headers = {
+function igHeaders() {
+  return {
     'User-Agent': randomUA(),
     Accept: 'application/json',
     'Accept-Language': 'en-US,en;q=0.9',
     'X-IG-App-ID': '936619743392459',
   };
-
-  if (cookieHeader) {
-    headers.Cookie = cookieHeader;
-  } else if (useCookies) {
-    const cookie = cookieFile
-      ? require('../utils/cookies').loadCookieHeaderFromFile(cookieFile)
-      : loadCookieHeader();
-    if (cookie) {
-      headers.Cookie = cookie;
-      const label = cookieFile ? path.basename(cookieFile) : require('../utils/cookies').getCookieFile().split(/[/\\]/).pop();
-      console.log('[scraper] Using cookies from', label);
-    } else if (!hasCookieFile()) {
-      console.warn('[scraper] No cookies.txt — Instagram may block this IP');
-    }
-  }
-
-  return headers;
 }
 
 function extractShortcode(url) {
@@ -55,17 +36,6 @@ function normalizePostUrl(url) {
     return `https://www.instagram.com/reel/${shortcode}/`;
   }
   return `https://www.instagram.com/p/${shortcode}/`;
-}
-
-function shortcodeToMediaId(shortcode) {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-  let id = 0n;
-  for (const char of shortcode) {
-    const index = alphabet.indexOf(char);
-    if (index < 0) throw new Error('Invalid Instagram shortcode');
-    id = id * 64n + BigInt(index);
-  }
-  return id.toString();
 }
 
 function isInstagramPageUrl(url) {
@@ -186,17 +156,6 @@ async function fetchOEmbed(pageUrl) {
   }
 }
 
-function shouldUseMediaApi(options = {}) {
-  if (options.useCookies === false) return false;
-  if (options.cookieHeader) return true;
-  if (options.cookieFile) return true;
-  return options.useCookies !== false && hasCookieFile();
-}
-
-function isPublicOnly(options = {}) {
-  return options.useCookies === false && !options.cookieHeader && !options.cookieFile;
-}
-
 function isVideoMediaNode(node) {
   return !!(
     node?.is_video ||
@@ -314,10 +273,10 @@ function extractCdnMediaFromHtml(html) {
   return null;
 }
 
-async function fetchPageHtml(pageUrl, headerOptions = {}) {
+async function fetchPageHtml(pageUrl) {
   const { data, status } = await axios.get(pageUrl, {
     headers: {
-      ...igHeaders(headerOptions),
+      ...igHeaders(),
       Accept: 'text/html,application/xhtml+xml',
       'Sec-Fetch-Mode': 'navigate',
     },
@@ -332,8 +291,8 @@ async function fetchPageHtml(pageUrl, headerOptions = {}) {
   return String(data);
 }
 
-async function fetchPageMeta(pageUrl, headerOptions = {}) {
-  const html = await fetchPageHtml(pageUrl, headerOptions);
+async function fetchPageMeta(pageUrl) {
+  const html = await fetchPageHtml(pageUrl);
   const videoUrl = extractCdnMediaFromHtml(html);
   const imageMatch = html.match(/property="og:image" content="([^"]+)"/);
 
@@ -351,63 +310,6 @@ async function fetchPageMeta(pageUrl, headerOptions = {}) {
   }
 
   throw new Error('No Open Graph media found on page');
-}
-
-async function fetchMediaApi(shortcode, headerOptions = {}) {
-  const mediaId = shortcodeToMediaId(shortcode);
-  const { data, status } = await axios.get(
-    `https://www.instagram.com/api/v1/media/${mediaId}/info/`,
-    {
-      headers: igHeaders(headerOptions),
-      timeout: 15000,
-      validateStatus: (s) => s < 500,
-    }
-  );
-
-  if (status !== 200) {
-    throw new Error(`Media API returned status ${status}`);
-  }
-
-  if (!data?.items?.[0]) {
-    throw new Error('Media API returned empty payload (auth required)');
-  }
-
-  return data.items[0];
-}
-
-function parseApiItem(item) {
-  if (item.carousel_media?.length) {
-    const items = item.carousel_media
-      .map((node, i) => {
-        const parsed = parseMediaNode(node);
-        return parsed ? { index: i + 1, ...parsed } : null;
-      })
-      .filter(Boolean);
-
-    if (!items.length) return null;
-
-    return {
-      type: 'carousel',
-      count: items.length,
-      items,
-      title: item.caption?.text,
-      author: item.user?.username,
-    };
-  }
-
-  const parsed = parseMediaNode(item);
-  if (!parsed) return null;
-
-  return {
-    type: parsed.type,
-    url: parsed.url,
-    thumbnail: parsed.thumbnail,
-    ext: parsed.ext,
-    title: parsed.title || item.caption?.text,
-    duration: parsed.duration,
-    videoVersions: parsed.videoVersions,
-    author: item.user?.username,
-  };
 }
 
 function parseEmbedHtmlFallback(html) {
@@ -430,7 +332,7 @@ function parseEmbedHtmlFallback(html) {
   return null;
 }
 
-async function fetchEmbedHtml(shortcode, headerOptions = {}) {
+async function fetchEmbedHtml(shortcode) {
   const embedPaths = [
     `https://www.instagram.com/p/${shortcode}/embed/captioned/`,
     `https://www.instagram.com/reel/${shortcode}/embed/captioned/`,
@@ -473,34 +375,7 @@ async function fetchEmbedHtml(shortcode, headerOptions = {}) {
   throw lastError || new Error('Could not parse embed HTML');
 }
 
-async function fetchPublicYtdlp(pageUrl) {
-  const { getInfo } = require('./ytdlp');
-  const info = await getInfo(pageUrl, ['--format', 'b'], { noCookies: true });
-
-  if (info.entries?.length) {
-    const entry = info.entries.find((e) => e.ext === 'mp4') || info.entries[0];
-    return {
-      type: entry.ext === 'mp4' ? 'video' : 'image',
-      url: entry.url,
-      thumbnail: entry.thumbnail,
-      ext: entry.ext || 'mp4',
-      title: info.title,
-    };
-  }
-
-  if (!info.url) throw new Error('yt-dlp returned no media URL');
-
-  return {
-    type: info.ext === 'mp4' ? 'video' : 'image',
-    url: info.url,
-    thumbnail: info.thumbnail,
-    ext: info.ext || 'mp4',
-    title: info.title,
-    duration: info.duration,
-  };
-}
-
-async function scrapeInstagram(pageUrl, options = {}) {
+async function scrapeInstagram(pageUrl) {
   const normalized = normalizePostUrl(pageUrl);
   const shortcode = extractShortcode(normalized);
   if (!shortcode) throw new Error('Invalid Instagram URL');
@@ -508,27 +383,11 @@ async function scrapeInstagram(pageUrl, options = {}) {
   let media = null;
   const errors = [];
 
-  if (shouldUseMediaApi(options)) {
-    try {
-      media = parseApiItem(await fetchMediaApi(shortcode, options));
-    } catch (err) {
-      errors.push(`api: ${err.message}`);
-    }
-  }
-
   if (!media) {
     try {
-      media = await fetchEmbedHtml(shortcode, options);
+      media = await fetchEmbedHtml(shortcode);
     } catch (err) {
       errors.push(`embed: ${err.message}`);
-    }
-  }
-
-  if (!media && isPublicOnly(options)) {
-    try {
-      media = await fetchPublicYtdlp(normalized);
-    } catch (err) {
-      errors.push(`ytdlp: ${err.message}`);
     }
   }
 
@@ -549,8 +408,8 @@ async function scrapeInstagram(pageUrl, options = {}) {
   return media;
 }
 
-async function getReel(pageUrl, options = {}) {
-  const media = await scrapeInstagram(pageUrl, options);
+async function getReel(pageUrl) {
+  const media = await scrapeInstagram(pageUrl);
 
   if (media.type === 'carousel') {
     const video = media.items.find((item) => item.type === 'video');
@@ -570,8 +429,8 @@ async function getReel(pageUrl, options = {}) {
   return media;
 }
 
-async function getPost(pageUrl, options = {}) {
-  return scrapeInstagram(pageUrl, options);
+async function getPost(pageUrl) {
+  return scrapeInstagram(pageUrl);
 }
 
 async function proxyMediaStream(mediaUrl, res, filename, contentType = 'video/mp4') {
