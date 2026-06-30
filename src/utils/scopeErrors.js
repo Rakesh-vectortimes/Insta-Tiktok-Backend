@@ -34,7 +34,8 @@ function createPublicScopeError(cause) {
     msg.includes('authentication') ||
     msg.includes('auth required') ||
     msg.includes('thumbnail only') ||
-    msg.includes('requires login')
+    msg.includes('requires login') ||
+    msg.includes('not available in public embed')
   ) {
     const err = new Error(SCOPE_MESSAGE);
     err.scopeLimited = true;

@@ -197,6 +197,33 @@ function isPublicOnly(options = {}) {
   return options.useCookies === false && !options.cookieHeader && !options.cookieFile;
 }
 
+function isVideoMediaNode(node) {
+  return !!(
+    node?.is_video ||
+    node?.__typename === 'GraphVideo' ||
+    node?.media_type === 2 ||
+    node?.video_url ||
+    node?.video_versions?.length ||
+    node?.product_type === 'clips'
+  );
+}
+
+function isValidMediaUrl(url) {
+  if (!url || url.length > 2048) return false;
+  if (!/^https?:\/\//i.test(url)) return false;
+  if (/[{}[\]\\]/.test(url)) return false;
+  return true;
+}
+
+function extractEscapedFieldUrl(html, field) {
+  const escaped = new RegExp(`\\\\"${field}\\\\":\\\\"(https:(?:\\\\\\\\/|[^"\\\\])+)\\\\"`);
+  const plain = new RegExp(`"${field}":"(https:(?:[^"\\\\]|\\\\.)+)"`);
+  const match = html.match(escaped) || html.match(plain);
+  if (!match?.[1]) return null;
+  const url = decodeJsonString(match[1]);
+  return isValidMediaUrl(url) ? url : null;
+}
+
 function decodeJsonString(value) {
   let decoded;
   try {
@@ -250,8 +277,17 @@ function parseEmbedContextJson(html) {
     const parsed = JSON.parse(unescaped);
     const media = parsed?.gql_data?.shortcode_media;
     if (!media) return null;
-    return parseMediaNode(media);
+
+    const result = parseMediaNode(media);
+    if (result) return result;
+
+    if (isVideoMediaNode(media)) {
+      throw new Error('Video URL not available in public embed');
+    }
+
+    return null;
   } catch (err) {
+    if (err.message === 'Video URL not available in public embed') throw err;
     console.warn('[scraper] contextJSON parse failed:', err.message);
     return null;
   }
@@ -375,26 +411,20 @@ function parseApiItem(item) {
 }
 
 function parseEmbedHtmlFallback(html) {
-  const videoMatch =
-    html.match(/\\"video_url\\":\\"((?:\\.|[^\\])*)\\"/) ||
-    html.match(/"video_url":"((?:\\.|[^"\\])*)"/);
-  const imageMatch =
-    html.match(/\\"display_url\\":\\"((?:\\.|[^\\])*)\\"/) ||
-    html.match(/"display_url":"((?:\\.|[^"\\])*)"/);
+  const videoUrl = extractEscapedFieldUrl(html, 'video_url');
+  const displayUrl = extractEscapedFieldUrl(html, 'display_url');
 
-  if (videoMatch) {
-    const url = decodeJsonString(videoMatch[1]);
+  if (videoUrl) {
     return {
       type: 'video',
-      url,
+      url: videoUrl,
       ext: 'mp4',
-      thumbnail: imageMatch ? decodeJsonString(imageMatch[1]) : undefined,
+      thumbnail: displayUrl,
     };
   }
 
-  if (imageMatch) {
-    const url = decodeJsonString(imageMatch[1]);
-    return { type: 'image', url, ext: 'jpg', thumbnail: url };
+  if (displayUrl) {
+    return { type: 'image', url: displayUrl, ext: 'jpg', thumbnail: displayUrl };
   }
 
   return null;
