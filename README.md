@@ -168,7 +168,7 @@ Convert your local file to a single-line escaped string:
 node -e "console.log(JSON.stringify(require('fs').readFileSync('cookies.txt','utf8')))"
 ```
 
-Copy the value **between the outer quotes** into Railway → **Variables** → `COOKIES_TXT_CONTENT`.
+Copy the value **between the outer quotes** into Railway → **Variables** → `COOKIES_TXT_CONTENT`. The server unescapes `\n`, `\t`, and `\r` automatically.
 
 **Hobby plan+ (optional):** mount a volume at `/app/data`, set `COOKIE_FILE_PATH=/app/data/cookies.txt`, and upload via the Railway shell instead.
 

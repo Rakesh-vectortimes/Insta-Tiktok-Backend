@@ -14,7 +14,11 @@ function writeCookiesFromEnv() {
 
   try {
     const target = getCookieWritePath();
-    const normalized = cookieContent.replace(/\\n/g, '\n');
+    const normalized = cookieContent
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t');
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, normalized, 'utf8');
     console.log(`[cookies] Wrote cookies from env to ${target}`);
