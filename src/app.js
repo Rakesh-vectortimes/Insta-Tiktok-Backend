@@ -11,6 +11,10 @@ const swaggerSpec = require('./config/swagger');
 const instagramRoutes = require('./routes/instagram');
 const tiktokRoutes = require('./routes/tiktok');
 const { cleanupTemp } = require('./utils/cleanup');
+const { globalLimiter, getActiveCount } = require('./utils/globalLimiter');
+const { cacheStats } = require('./services/cache');
+const { cooldownInfo } = require('./services/sessionCooldown');
+const { downloadQueue, sessionQueue } = require('./services/requestQueue');
 const path = require('path');
 
 const app = express();
@@ -29,6 +33,8 @@ const limiter = rateLimit({
   max: 30,
   message: { error: 'Too many requests. Please slow down.' }
 });
+// Global capacity guard, then per-IP rate limiting
+app.use('/api/', globalLimiter);
 app.use('/api/', limiter);
 
 app.use('/api/instagram', instagramRoutes);
@@ -66,6 +72,13 @@ app.get('/health', (req, res) => {
     instagramCookies: cookiesPresent
       ? path.basename(getCookieFile())
       : 'not configured',
+    activeRequests: getActiveCount(),
+    cache: cacheStats(),
+    cooldown: cooldownInfo(),
+    queues: {
+      download: downloadQueue.stats(),
+      session: sessionQueue.stats(),
+    },
   };
 
   if (expiryInfo) {

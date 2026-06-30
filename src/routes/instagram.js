@@ -24,6 +24,7 @@ const {
   isDirectMediaUrl,
   normalizePostUrl,
 } = require('../services/igScraper');
+const { analyzeUrl } = require('../services/analyzeUrl');
 const {
   QUALITIES,
   FORMATS,
@@ -32,6 +33,20 @@ const {
   getAudioBitrate,
   buildDownloadLinks,
 } = require('../utils/mediaOptions');
+
+function mapSource(source) {
+  if (source === 'session') return 'yt-dlp';
+  return 'scraper';
+}
+
+function sendAnalyzeError(res, err, fallbackStatus = 500) {
+  res.status(err.retryable ? 503 : fallbackStatus).json({
+    error: err.message,
+    retryable: err.retryable || false,
+    retryAfterSeconds: err.retryAfterSeconds,
+    ...(err.details && { details: err.details }),
+  });
+}
 
 // ── Reel download (stream directly) ──────────────────────────────────────────
 router.post('/reel', async (req, res) => {
@@ -51,38 +66,20 @@ router.post('/reel', async (req, res) => {
   );
 
   try {
-    const scraped = await getReel(url);
+    const scraped = await analyzeUrl(url, { mode: 'reel', sessionid });
     return res.json({
       title: scraped.title || 'reel',
       thumbnail: scraped.thumbnail,
       duration: scraped.duration,
       author: scraped.author,
-      source: 'scraper',
+      source: mapSource(scraped.source),
       formats: FORMATS,
       qualities: QUALITIES.map((q) => `${q}p`),
       downloadUrl: selected.url,
       downloads,
     });
-  } catch (scrapeErr) {
-    try {
-      const info = await getInfo(url, [], { sessionid });
-      return res.json({
-        title: info.title || 'reel',
-        thumbnail: info.thumbnail,
-        duration: info.duration,
-        source: 'yt-dlp',
-        formats: FORMATS,
-        qualities: QUALITIES.map((q) => `${q}p`),
-        downloadUrl: selected.url,
-        downloads,
-      });
-    } catch (ytErr) {
-      return res.status(500).json({
-        error:
-          'Scraper and yt-dlp both failed. Add cookies.txt to project root (export from browser while logged in).',
-        details: ytErr.message,
-      });
-    }
+  } catch (err) {
+    sendAnalyzeError(res, err);
   }
 });
 
@@ -166,40 +163,12 @@ router.post('/post', async (req, res) => {
   const { url, sessionid } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
-  const pageUrl = normalizePostUrl(url);
-
   try {
-    const scraped = await getPost(pageUrl);
-    return res.json(scraped);
-  } catch (scrapeErr) {
-    console.error('[scraper]', scrapeErr.message);
-  }
-
-  try {
-    const info = await getInfo(pageUrl, ['--format', 'b'], { sessionid });
-
-    // Carousel: info.entries is an array
-    if (info.entries && info.entries.length > 0) {
-      const items = info.entries.map((e, i) => ({
-        index: i + 1,
-        url: e.url,
-        thumbnail: e.thumbnail,
-        ext: e.ext,
-        type: e.ext === 'mp4' ? 'video' : 'image'
-      }));
-      return res.json({ type: 'carousel', count: items.length, items });
-    }
-
-    // Single post
-    res.json({
-      type: info.ext === 'mp4' ? 'video' : 'image',
-      url: info.url,
-      thumbnail: info.thumbnail,
-      ext: info.ext,
-      title: info.title
-    });
+    const result = await analyzeUrl(url, { mode: 'post', sessionid });
+    const { source, ...payload } = result;
+    res.json({ ...payload, source: mapSource(source) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendAnalyzeError(res, err);
   }
 });
 
