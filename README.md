@@ -178,6 +178,46 @@ Update your frontend env:
 VITE_API_URL=https://your-app.up.railway.app
 ```
 
+### Production scale (50k+ users)
+
+For high traffic, add these services:
+
+| Service | Purpose |
+|---------|---------|
+| **Redis** (Railway/Upstash) | Shared cache + BullMQ job queue |
+| **Worker** (`npm run worker`) | Background analyze jobs — deploy as 2nd Railway service |
+| **Session pool** | Multiple Instagram accounts via `INSTAGRAM_SESSION_POOL` |
+| **Cloudflare R2** | CDN media storage (`MIRROR_TO_CDN=true`) |
+
+**Minimum production env:**
+
+```env
+REDIS_URL=redis://...
+INSTAGRAM_SESSION_POOL=[{"id":"s1","cookiesContent":"...","maxDaily":500},{"id":"s2","cookiesContent":"...","maxDaily":500}]
+MIRROR_TO_CDN=true
+R2_BUCKET=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_PUBLIC_URL=https://cdn.yourdomain.com
+FORCE_ASYNC_JOBS=true
+GLOBAL_MAX_CONCURRENT=200
+```
+
+**Async jobs (spike traffic):**
+
+```bash
+POST /api/jobs/analyze   # returns jobId
+GET  /api/jobs/:jobId    # poll for result
+```
+
+**Architecture:**
+
+```text
+User → API → Redis cache → BullMQ queue → Worker → Session pool → Downloader → R2/CDN
+```
+
+> One session cannot serve millions of users. Scale with **multiple sessions** in the pool + **horizontal workers** + **CDN**. The queue protects your backend; the session pool reduces Instagram blocking risk.
+
 ## License
 
 MIT

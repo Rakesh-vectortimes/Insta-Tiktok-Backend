@@ -1,5 +1,5 @@
 let activeRequests = 0;
-const MAX_CONCURRENT = 50;
+const MAX_CONCURRENT = parseInt(process.env.GLOBAL_MAX_CONCURRENT || '200', 10);
 
 function globalLimiter(req, res, next) {
   if (activeRequests >= MAX_CONCURRENT) {

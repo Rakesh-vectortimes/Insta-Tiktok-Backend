@@ -3,6 +3,11 @@ const { writeCookiesFromEnv, hasCookieFile, getCookieFile, getCookieExpiryInfo }
 
 writeCookiesFromEnv();
 
+const { connectRedis } = require('./services/redis');
+const { initSessionPool } = require('./services/sessionPool');
+
+initSessionPool();
+
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -10,11 +15,15 @@ const swaggerUi = require('swagger-ui-express');
 const swaggerSpec = require('./config/swagger');
 const instagramRoutes = require('./routes/instagram');
 const tiktokRoutes = require('./routes/tiktok');
+const jobRoutes = require('./routes/jobs');
 const { cleanupTemp } = require('./utils/cleanup');
 const { globalLimiter, getActiveCount } = require('./utils/globalLimiter');
 const { cacheStats } = require('./services/cache');
-const { cooldownInfo } = require('./services/sessionCooldown');
 const { downloadQueue, sessionQueue } = require('./services/requestQueue');
+const { poolStats } = require('./services/sessionPool');
+const { redisStatus } = require('./services/redis');
+const { queueStats } = require('./services/jobQueue');
+const { storageStatus } = require('./services/storage');
 const path = require('path');
 
 const app = express();
@@ -27,18 +36,18 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
 }));
 app.get('/api-docs.json', (req, res) => res.json(swaggerSpec));
 
-// Rate limiting — 30 requests per 10 minutes per IP
 const limiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 30,
-  message: { error: 'Too many requests. Please slow down.' }
+  windowMs: parseInt(process.env.API_RATE_LIMIT_WINDOW_MS || '600000', 10),
+  max: parseInt(process.env.API_RATE_LIMIT_MAX || '30', 10),
+  message: { error: 'Too many requests. Please slow down.', retryable: true },
 });
-// Global capacity guard, then per-IP rate limiting
+
 app.use('/api/', globalLimiter);
 app.use('/api/', limiter);
 
 app.use('/api/instagram', instagramRoutes);
 app.use('/api/tiktok', tiktokRoutes);
+app.use('/api/jobs', jobRoutes);
 
 app.get('/', (req, res) => {
   res.json({
@@ -52,18 +61,22 @@ app.get('/', (req, res) => {
         post: 'POST /api/instagram/post',
         carouselZip: 'POST /api/instagram/carousel/zip',
         dp: 'GET /api/instagram/dp/:username',
-        story: 'POST /api/instagram/story'
+        story: 'POST /api/instagram/story',
+      },
+      jobs: {
+        analyze: 'POST /api/jobs/analyze',
+        status: 'GET /api/jobs/:jobId',
       },
       tiktok: {
         video: 'POST /api/tiktok/video',
         audio: 'POST /api/tiktok/audio',
-        slideshow: 'POST /api/tiktok/slideshow'
-      }
-    }
+        slideshow: 'POST /api/tiktok/slideshow',
+      },
+    },
   });
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
   const cookiesPresent = hasCookieFile();
   const expiryInfo = cookiesPresent ? getCookieExpiryInfo() : null;
 
@@ -73,8 +86,11 @@ app.get('/health', (req, res) => {
       ? path.basename(getCookieFile())
       : 'not configured',
     activeRequests: getActiveCount(),
+    redis: await redisStatus(),
     cache: cacheStats(),
-    cooldown: cooldownInfo(),
+    storage: storageStatus(),
+    sessionPool: await poolStats(),
+    jobQueue: await queueStats(),
     queues: {
       download: downloadQueue.stats(),
       session: sessionQueue.stats(),
@@ -92,28 +108,37 @@ app.get('/health', (req, res) => {
     }
   }
 
+  const pool = response.sessionPool;
+  if (pool.total > 0 && pool.available === 0) {
+    response.warning =
+      response.warning ||
+      'All Instagram sessions are cooling down or over daily limit.';
+  }
+
   res.json(response);
 });
 
-// Clean temp files every 30 minutes
 setInterval(cleanupTemp, 30 * 60 * 1000);
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server running on port ${PORT}`);
-  if (hasCookieFile()) {
-    console.log(`🍪 Instagram cookies loaded: ${path.basename(getCookieFile())}`);
-    const expiry = getCookieExpiryInfo();
-    if (expiry) {
-      if (expiry.isExpired) {
-        console.warn('⚠️  Instagram session has EXPIRED — re-export cookies.txt');
-      } else if (expiry.isExpiringSoon) {
-        console.warn(`⚠️  Instagram session expires in ${expiry.daysRemaining} days`);
-      } else {
-        console.log(`✅ Instagram session valid for ${expiry.daysRemaining} more days`);
+
+connectRedis().then(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Server running on port ${PORT}`);
+    if (hasCookieFile()) {
+      console.log(`🍪 Instagram cookies loaded: ${path.basename(getCookieFile())}`);
+      const expiry = getCookieExpiryInfo();
+      if (expiry) {
+        if (expiry.isExpired) {
+          console.warn('⚠️  Instagram session has EXPIRED — re-export cookies.txt');
+        } else if (expiry.isExpiringSoon) {
+          console.warn(`⚠️  Instagram session expires in ${expiry.daysRemaining} days`);
+        } else {
+          console.log(`✅ Instagram session valid for ${expiry.daysRemaining} more days`);
+        }
       }
+    } else {
+      console.warn('⚠️  No Instagram cookies found — add cookies.txt locally or set COOKIES_TXT_CONTENT in Railway Variables');
     }
-  } else {
-    console.warn('⚠️  No Instagram cookies found — add cookies.txt locally or set COOKIES_TXT_CONTENT in Railway Variables');
-  }
+  });
 });

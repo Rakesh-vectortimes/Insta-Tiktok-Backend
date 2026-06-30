@@ -40,6 +40,15 @@ function mapSource(source) {
 }
 
 function sendAnalyzeError(res, err, fallbackStatus = 500) {
+  if (err.jobId) {
+    return res.status(202).json({
+      status: 'queued',
+      jobId: err.jobId,
+      pollUrl: err.pollUrl,
+      message: err.message,
+      retryable: true,
+    });
+  }
   res.status(err.retryable ? 503 : fallbackStatus).json({
     error: err.message,
     retryable: err.retryable || false,
@@ -67,6 +76,9 @@ router.post('/reel', async (req, res) => {
 
   try {
     const scraped = await analyzeUrl(url, { mode: 'reel', sessionid });
+    if (scraped.status === 'queued') {
+      return res.status(202).json(scraped);
+    }
     return res.json({
       title: scraped.title || 'reel',
       thumbnail: scraped.thumbnail,
@@ -165,6 +177,9 @@ router.post('/post', async (req, res) => {
 
   try {
     const result = await analyzeUrl(url, { mode: 'post', sessionid });
+    if (result.status === 'queued') {
+      return res.status(202).json(result);
+    }
     const { source, ...payload } = result;
     res.json({ ...payload, source: mapSource(source) });
   } catch (err) {

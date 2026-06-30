@@ -1,4 +1,5 @@
 const axios = require('axios');
+const path = require('path');
 const { loadCookieHeader, hasCookieFile } = require('../utils/cookies');
 
 const USER_AGENTS = [
@@ -12,7 +13,7 @@ function randomUA() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-function igHeaders() {
+function igHeaders({ useCookies = true, cookieFile, cookieHeader } = {}) {
   const headers = {
     'User-Agent': randomUA(),
     Accept: 'application/json',
@@ -20,12 +21,19 @@ function igHeaders() {
     'X-IG-App-ID': '936619743392459',
   };
 
-  const cookie = loadCookieHeader();
-  if (cookie) {
-    headers.Cookie = cookie;
-    console.log('[scraper] Using cookies from', require('../utils/cookies').getCookieFile().split(/[/\\]/).pop());
-  } else if (!hasCookieFile()) {
-    console.warn('[scraper] No cookies.txt — Instagram may block this IP');
+  if (cookieHeader) {
+    headers.Cookie = cookieHeader;
+  } else if (useCookies) {
+    const cookie = cookieFile
+      ? require('../utils/cookies').loadCookieHeaderFromFile(cookieFile)
+      : loadCookieHeader();
+    if (cookie) {
+      headers.Cookie = cookie;
+      const label = cookieFile ? path.basename(cookieFile) : require('../utils/cookies').getCookieFile().split(/[/\\]/).pop();
+      console.log('[scraper] Using cookies from', label);
+    } else if (!hasCookieFile()) {
+      console.warn('[scraper] No cookies.txt — Instagram may block this IP');
+    }
   }
 
   return headers;
@@ -174,12 +182,12 @@ async function fetchOEmbed(pageUrl) {
   }
 }
 
-async function fetchMediaApi(shortcode) {
+async function fetchMediaApi(shortcode, headerOptions = {}) {
   const mediaId = shortcodeToMediaId(shortcode);
   const { data, status } = await axios.get(
     `https://www.instagram.com/api/v1/media/${mediaId}/info/`,
     {
-      headers: igHeaders(),
+      headers: igHeaders(headerOptions),
       timeout: 15000,
       validateStatus: (s) => s < 500,
     }
@@ -227,11 +235,11 @@ function parseApiItem(item) {
   };
 }
 
-async function fetchEmbedHtml(shortcode) {
+async function fetchEmbedHtml(shortcode, headerOptions = {}) {
   const { data } = await axios.get(
     `https://www.instagram.com/p/${shortcode}/embed/captioned/`,
     {
-      headers: { ...igHeaders(), Accept: 'text/html' },
+      headers: { ...igHeaders(headerOptions), Accept: 'text/html' },
       timeout: 15000,
     }
   );
@@ -258,10 +266,10 @@ async function fetchEmbedHtml(shortcode) {
   throw new Error('Could not parse embed HTML');
 }
 
-async function fetchGraphQL(shortcode) {
+async function fetchGraphQL(shortcode, headerOptions = {}) {
   const embedUrl = `https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`;
   const { data, status } = await axios.get(embedUrl, {
-    headers: igHeaders(),
+    headers: igHeaders(headerOptions),
     timeout: 15000,
     validateStatus: (s) => s < 500,
   });
@@ -275,7 +283,7 @@ async function fetchGraphQL(shortcode) {
   return parsed;
 }
 
-async function scrapeInstagram(pageUrl) {
+async function scrapeInstagram(pageUrl, options = {}) {
   const normalized = normalizePostUrl(pageUrl);
   const shortcode = extractShortcode(normalized);
   if (!shortcode) throw new Error('Invalid Instagram URL');
@@ -284,14 +292,14 @@ async function scrapeInstagram(pageUrl) {
   const errors = [];
 
   try {
-    media = parseApiItem(await fetchMediaApi(shortcode));
+    media = parseApiItem(await fetchMediaApi(shortcode, options));
   } catch (err) {
     errors.push(`api: ${err.message}`);
   }
 
   if (!media) {
     try {
-      media = await fetchGraphQL(shortcode);
+      media = await fetchGraphQL(shortcode, options);
     } catch (err) {
       errors.push(`graphql: ${err.message}`);
     }
@@ -299,7 +307,7 @@ async function scrapeInstagram(pageUrl) {
 
   if (!media) {
     try {
-      media = await fetchEmbedHtml(shortcode);
+      media = await fetchEmbedHtml(shortcode, options);
     } catch (err) {
       errors.push(`embed: ${err.message}`);
     }
@@ -322,8 +330,8 @@ async function scrapeInstagram(pageUrl) {
   return media;
 }
 
-async function getReel(pageUrl) {
-  const media = await scrapeInstagram(pageUrl);
+async function getReel(pageUrl, options = {}) {
+  const media = await scrapeInstagram(pageUrl, options);
 
   if (media.type === 'carousel') {
     const video = media.items.find((item) => item.type === 'video');
@@ -343,8 +351,8 @@ async function getReel(pageUrl) {
   return media;
 }
 
-async function getPost(pageUrl) {
-  return scrapeInstagram(pageUrl);
+async function getPost(pageUrl, options = {}) {
+  return scrapeInstagram(pageUrl, options);
 }
 
 async function proxyMediaStream(mediaUrl, res, filename, contentType = 'video/mp4') {

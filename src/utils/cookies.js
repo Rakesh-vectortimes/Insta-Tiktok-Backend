@@ -8,19 +8,26 @@ function getCookieWritePath() {
   return process.env.COOKIE_FILE_PATH || path.join(PROJECT_ROOT, 'cookies.txt');
 }
 
+function normalizeCookieContent(content) {
+  return content
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t');
+}
+
+function writeCookieFile(targetPath, content) {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, content, 'utf8');
+}
+
 function writeCookiesFromEnv() {
   const cookieContent = process.env.COOKIES_TXT_CONTENT;
   if (!cookieContent) return false;
 
   try {
     const target = getCookieWritePath();
-    const normalized = cookieContent
-      .replace(/\\r\\n/g, '\n')
-      .replace(/\\n/g, '\n')
-      .replace(/\\r/g, '\r')
-      .replace(/\\t/g, '\t');
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, normalized, 'utf8');
+    writeCookieFile(target, normalizeCookieContent(cookieContent));
     console.log(`[cookies] Wrote cookies from env to ${target}`);
     return true;
   } catch (err) {
@@ -44,9 +51,8 @@ function getCookieFile() {
   return resolveCookieFile();
 }
 
-function loadCookieHeader(domain = 'instagram.com') {
-  const cookieFile = resolveCookieFile();
-  if (!fs.existsSync(cookieFile)) return null;
+function loadCookieHeaderFromFile(cookieFile, domain = 'instagram.com') {
+  if (!cookieFile || !fs.existsSync(cookieFile)) return null;
 
   const pairs = [];
   for (const line of fs.readFileSync(cookieFile, 'utf8').split('\n')) {
@@ -59,6 +65,10 @@ function loadCookieHeader(domain = 'instagram.com') {
   }
 
   return pairs.length ? pairs.join('; ') : null;
+}
+
+function loadCookieHeader(domain = 'instagram.com') {
+  return loadCookieHeaderFromFile(resolveCookieFile(), domain);
 }
 
 function hasCookieFile() {
@@ -110,8 +120,11 @@ function getCookieExpiryInfo() {
 module.exports = {
   getCookieFile,
   loadCookieHeader,
+  loadCookieHeaderFromFile,
   hasCookieFile,
   writeCookiesFromEnv,
+  writeCookieFile,
+  normalizeCookieContent,
   getCookieWritePath,
   getCookieExpiryInfo,
 };
