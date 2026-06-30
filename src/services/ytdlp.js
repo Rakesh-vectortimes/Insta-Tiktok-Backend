@@ -16,7 +16,7 @@ function randomUA() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-function buildArgs(extraArgs = [], { sessionid, cookieFile } = {}) {
+function buildArgs(extraArgs = [], { sessionid, cookieFile, noCookies = false } = {}) {
   const args = [
     '--no-warnings',
     '--no-playlist',
@@ -30,24 +30,26 @@ function buildArgs(extraArgs = [], { sessionid, cookieFile } = {}) {
     '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   ];
 
-  const resolvedCookieFile = cookieFile || getCookieFile();
+  if (!noCookies) {
+    const resolvedCookieFile = cookieFile || getCookieFile();
 
-  if (cookieFile && fs.existsSync(cookieFile)) {
-    args.push('--cookies', cookieFile);
-    console.log('[yt-dlp] Using pool cookies:', path.basename(cookieFile));
-  } else if (hasCookieFile()) {
-    args.push('--cookies', resolvedCookieFile);
-    console.log('[yt-dlp] Using cookies:', path.basename(resolvedCookieFile));
-  } else if (process.env.INSTAGRAM_COOKIES_BROWSER) {
-    args.push('--cookies-from-browser', process.env.INSTAGRAM_COOKIES_BROWSER);
-    console.log('[yt-dlp] Using browser cookies:', process.env.INSTAGRAM_COOKIES_BROWSER);
-  } else {
-    const resolved = sessionid || process.env.INSTAGRAM_SESSION_ID;
-    if (resolved) {
-      args.push('--add-header', `Cookie:sessionid=${resolved}`);
-      console.log('[yt-dlp] Using sessionid from request/env');
+    if (cookieFile && fs.existsSync(cookieFile)) {
+      args.push('--cookies', cookieFile);
+      console.log('[yt-dlp] Using pool cookies:', path.basename(cookieFile));
+    } else if (hasCookieFile()) {
+      args.push('--cookies', resolvedCookieFile);
+      console.log('[yt-dlp] Using cookies:', path.basename(resolvedCookieFile));
+    } else if (process.env.INSTAGRAM_COOKIES_BROWSER) {
+      args.push('--cookies-from-browser', process.env.INSTAGRAM_COOKIES_BROWSER);
+      console.log('[yt-dlp] Using browser cookies:', process.env.INSTAGRAM_COOKIES_BROWSER);
     } else {
-      console.warn('[yt-dlp] No cookies found — Instagram will likely rate-limit');
+      const resolved = sessionid || process.env.INSTAGRAM_SESSION_ID;
+      if (resolved) {
+        args.push('--add-header', `Cookie:sessionid=${resolved}`);
+        console.log('[yt-dlp] Using sessionid from request/env');
+      } else {
+        console.warn('[yt-dlp] No cookies found — Instagram will likely rate-limit');
+      }
     }
   }
 

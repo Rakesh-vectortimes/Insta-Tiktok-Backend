@@ -31,7 +31,10 @@ function createPublicScopeError(cause) {
     msg.includes('private') ||
     msg.includes('story') ||
     msg.includes('login') ||
-    msg.includes('authentication')
+    msg.includes('authentication') ||
+    msg.includes('auth required') ||
+    msg.includes('thumbnail only') ||
+    msg.includes('requires login')
   ) {
     const err = new Error(SCOPE_MESSAGE);
     err.scopeLimited = true;
