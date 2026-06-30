@@ -55,6 +55,7 @@ function sendAnalyzeError(res, err, fallbackStatus = 500) {
     scopeLimited: err.scopeLimited || false,
     retryable: err.retryable || false,
     retryAfterSeconds: err.retryAfterSeconds,
+    ...(err.reasonCode && { reasonCode: err.reasonCode }),
     ...(err.details && { details: err.details }),
   });
 }
@@ -148,6 +149,7 @@ router.get('/reel/stream', async (req, res) => {
         error: err.message,
         scopeLimited: true,
         retryable: err.retryable,
+        ...(err.reasonCode && { reasonCode: err.reasonCode }),
       });
     }
   }
