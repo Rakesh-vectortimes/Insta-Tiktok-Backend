@@ -809,11 +809,170 @@ function normalizeMediaUrl(url) {
   return decodeJsonEscapes(url);
 }
 
-function parseProfileFromHtml(html) {
-  const dpUrl =
-    html.match(/"profile_pic_url_hd":"((?:\\.|[^"\\])*)"/)?.[1] ||
-    html.match(/property="og:image" content="([^"]+)"/)?.[1];
+function profilePicSizeFromUrl(url) {
+  if (!url) return 0;
+  const sized = url.match(/s(\d+)x\1(?:_tt\d+)?/i);
+  if (sized) return parseInt(sized[1], 10);
+  const generic = url.match(/s(\d+)x(\d+)/i);
+  if (generic) return Math.min(parseInt(generic[1], 10), parseInt(generic[2], 10));
+  return 0;
+}
 
+function pickBestProfilePicUrl(...urls) {
+  let best = null;
+  let bestSize = 0;
+
+  for (const raw of urls) {
+    const url = normalizeMediaUrl(raw);
+    if (!isValidMediaUrl(url)) continue;
+    const size = profilePicSizeFromUrl(url);
+    if (size > bestSize) {
+      bestSize = size;
+      best = url;
+    }
+  }
+
+  return best;
+}
+
+function extractPageTokens(html) {
+  const lsd =
+    html.match(/"LSD",\[\],\{"token":"([^"]+)"/)?.[1] ||
+    html.match(/"lsd":"([^"]+)"/)?.[1] ||
+    html.match(/name="lsd" value="([^"]+)"/)?.[1];
+  const csrf = html.match(/"csrf_token":"([^"]+)"/)?.[1];
+  return { lsd, csrf };
+}
+
+function extractBestProfilePicFromHtml(html) {
+  const candidates = [];
+
+  for (const match of html.matchAll(/"profile_pic_url_hd":"((?:\\.|[^"\\])*)"/g)) {
+    candidates.push(match[1]);
+  }
+  for (const match of html.matchAll(/\\"profile_pic_url_hd\\":\\"(https:(?:\\\\\/|[^"\\])+)\\"/g)) {
+    candidates.push(match[1]);
+  }
+  for (const match of html.matchAll(/"profile_pic_url":"((?:\\.|[^"\\])*)"/g)) {
+    candidates.push(match[1]);
+  }
+  for (const match of html.matchAll(
+    /https:\/\/[^"\s]+cdninstagram\.com\/v\/[^"\s]+\.jpg[^"\s]*/g
+  )) {
+    candidates.push(match[0]);
+  }
+
+  const ogImage = html.match(/property="og:image" content="([^"]+)"/)?.[1];
+  if (ogImage) candidates.push(ogImage);
+
+  const best = pickBestProfilePicUrl(...candidates.map(decodeJsonEscapes));
+  const size = profilePicSizeFromUrl(best);
+  if (!best || size < 150) return null;
+  return best;
+}
+
+function mapApiUserToProfile(user, fallbackUsername) {
+  if (!user) return null;
+
+  const dpUrl = pickBestProfilePicUrl(user.profile_pic_url_hd, user.profile_pic_url);
+  if (!dpUrl) return null;
+
+  return {
+    username: user.username || fallbackUsername,
+    fullName: user.full_name || null,
+    dpUrl,
+    dpSize: profilePicSizeFromUrl(dpUrl) || undefined,
+    isPrivate: user.is_private,
+    followers: user.edge_followed_by?.count,
+  };
+}
+
+async function fetchProfilePage(username) {
+  const profileUrl = `https://www.instagram.com/${username}/`;
+  const { data, status } = await igAxios.get(profileUrl, {
+    headers: chromeDocumentHeaders(),
+  });
+
+  if (status !== 200) {
+    throw new Error(`Profile page returned status ${status}`);
+  }
+
+  const html = String(data);
+  return {
+    html,
+    tokens: extractPageTokens(html),
+    userId: html.match(/"user_id":"(\d+)"/)?.[1] || null,
+    profileUrl,
+  };
+}
+
+function buildProfileApiHeaders(profileUrl, tokens = {}) {
+  const headers = { ...chromeApiHeaders(profileUrl) };
+  if (tokens.lsd) {
+    headers['X-FB-LSD'] = tokens.lsd;
+    headers['X-CSRFToken'] = tokens.csrf || tokens.lsd;
+  }
+  if (tokens.csrf) {
+    headers.Cookie = `csrftoken=${tokens.csrf};`;
+  }
+  return headers;
+}
+
+async function fetchProfileViaApi(username, pageContext = null) {
+  const profileUrl = pageContext?.profileUrl || `https://www.instagram.com/${username}/`;
+  const headers = buildProfileApiHeaders(profileUrl, pageContext?.tokens);
+
+  const { data, status } = await igAxios.get(
+    `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
+    { headers }
+  );
+
+  if (isHtmlWall(data)) {
+    throw new Error('Instagram API blocked');
+  }
+  if (status !== 200) {
+    throw new Error(`Profile API returned status ${status}`);
+  }
+
+  const profile = mapApiUserToProfile(data?.data?.user, username);
+  if (!profile) throw new Error('User not found');
+  return profile;
+}
+
+async function fetchProfileViaApiWithPageTokens(username) {
+  const page = await fetchProfilePage(username);
+  return fetchProfileViaApi(username, page);
+}
+
+async function fetchProfileViaMobileApi(username) {
+  const profileUrl = `https://www.instagram.com/${username}/`;
+  const { data, status } = await igAxios.get(
+    `https://i.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
+    {
+      headers: {
+        'User-Agent':
+          'Instagram 269.0.0.18.75 Android (26/8.0.0; 420dpi; 1080x1920; samsung; SM-G935F; hero2lte; samsungexynos8890; en_US; 314665256)',
+        'X-IG-App-ID': '936619743392459',
+        Accept: 'application/json',
+        Referer: profileUrl,
+      },
+    }
+  );
+
+  if (isHtmlWall(data)) {
+    throw new Error('Instagram mobile API blocked');
+  }
+  if (status !== 200) {
+    throw new Error(`Mobile profile API returned status ${status}`);
+  }
+
+  const profile = mapApiUserToProfile(data?.data?.user, username);
+  if (!profile) throw new Error('User not found');
+  return profile;
+}
+
+function parseProfileFromHtml(html) {
+  const dpUrl = extractBestProfilePicFromHtml(html);
   if (!dpUrl) return null;
 
   const fullName =
@@ -825,46 +984,16 @@ function parseProfileFromHtml(html) {
   return {
     username: username || null,
     fullName: fullName ? decodeJsonEscapes(fullName) : null,
-    dpUrl: decodeJsonEscapes(dpUrl),
+    dpUrl: normalizeMediaUrl(dpUrl),
+    dpSize: profilePicSizeFromUrl(dpUrl) || undefined,
     isPrivate: /"is_private":true/.test(html),
     followers: followers ? parseInt(followers, 10) : undefined,
   };
 }
 
-async function fetchProfileViaApi(username) {
-  const profileUrl = `https://www.instagram.com/${username}/`;
-  const { data } = await igAxios.get(
-    `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
-    { headers: chromeApiHeaders(profileUrl) }
-  );
-
-  if (isHtmlWall(data)) {
-    throw new Error('Instagram API blocked');
-  }
-
-  const user = data?.data?.user;
-  if (!user) throw new Error('User not found');
-
-  return {
-    username: user.username,
-    fullName: user.full_name,
-    dpUrl: normalizeMediaUrl(user.profile_pic_url_hd || user.profile_pic_url),
-    isPrivate: user.is_private,
-    followers: user.edge_followed_by?.count,
-  };
-}
-
 async function fetchProfileViaPage(username) {
-  const profileUrl = `https://www.instagram.com/${username}/`;
-  const { data, status } = await igAxios.get(profileUrl, {
-    headers: chromeDocumentHeaders(),
-  });
-
-  if (status !== 200) {
-    throw new Error(`Profile page returned status ${status}`);
-  }
-
-  const parsed = parseProfileFromHtml(String(data));
+  const page = await fetchProfilePage(username);
+  const parsed = parseProfileFromHtml(page.html);
   if (!parsed?.dpUrl) {
     throw new Error('Profile picture not found in page HTML');
   }
@@ -881,7 +1010,12 @@ async function getProfileDp(username) {
 
   const errors = [];
 
-  for (const fetcher of [fetchProfileViaApi, fetchProfileViaPage]) {
+  for (const fetcher of [
+    fetchProfileViaApi,
+    fetchProfileViaApiWithPageTokens,
+    fetchProfileViaMobileApi,
+    fetchProfileViaPage,
+  ]) {
     try {
       const profile = await fetcher(clean);
       return {
