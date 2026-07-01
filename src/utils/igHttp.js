@@ -111,21 +111,28 @@ async function testProxyConnection(username = 'instagram') {
 
   try {
     const profileUrl = `https://www.instagram.com/${username}/`;
-    const res = await getIgAxios().get(
-      `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
-      {
-        headers: chromeApiHeaders(profileUrl),
-        timeout: 15000,
-      }
-    );
+    const res = await getIgAxios().get(profileUrl, {
+      headers: iphoneHeaders(),
+      timeout: 15000,
+    });
 
-    const reachable = res.status === 200 && !isHtmlWall(res.data) && !!res.data?.data?.user;
+    const html = String(res.data);
+    const hasProfilePic =
+      /profile_pic_url|cdninstagram\.com\/v\/[^"\s]+\.jpg/i.test(html) &&
+      !isHtmlWall(html);
+    const reachable = res.status === 200 && hasProfilePic;
+
     return {
       ...status,
       tested: true,
       reachable,
       instagramStatus: res.status,
-      ...(reachable ? {} : { hint: 'Proxy is routing but Instagram still blocked — use a residential proxy, not datacenter.' }),
+      method: 'page_scrape',
+      ...(reachable
+        ? {}
+        : {
+            hint: 'Proxy reaches Instagram but profile page has no extractable DP — retry or rotate proxy IP.',
+          }),
     };
   } catch (err) {
     return {
@@ -133,6 +140,7 @@ async function testProxyConnection(username = 'instagram') {
       tested: true,
       reachable: false,
       error: err.message,
+      method: 'page_scrape',
       hint: 'Proxy connection failed — check IG_HTTP_PROXY credentials and format.',
     };
   }

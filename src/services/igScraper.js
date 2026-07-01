@@ -1,7 +1,6 @@
 const {
   igAxios,
   igCdnAxios,
-  getProxyStatus,
   chromeDocumentHeaders,
   chromeApiHeaders,
   iphoneHeaders,
@@ -845,22 +844,68 @@ function extractPageTokens(html) {
   return { lsd, csrf };
 }
 
+function findDeep(obj, key, depth = 0) {
+  if (depth > 10 || !obj || typeof obj !== 'object') return null;
+
+  const value = obj[key];
+  if (typeof value === 'string' && /^https?:\/\//i.test(value)) return value;
+
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = findDeep(item, key, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  for (const k of Object.keys(obj)) {
+    const found = findDeep(obj[k], key, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function extractProfilePicFromJsonScripts(html) {
+  const urls = [];
+
+  for (const match of html.matchAll(/<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/g)) {
+    try {
+      const json = JSON.parse(match[1]);
+      const hd = findDeep(json, 'profile_pic_url_hd');
+      const std = findDeep(json, 'profile_pic_url');
+      if (hd) urls.push(hd);
+      if (std) urls.push(std);
+    } catch {
+      // skip malformed script blocks
+    }
+  }
+
+  return pickBestProfilePicUrl(...urls);
+}
+
 function extractBestProfilePicFromHtml(html) {
   const candidates = [];
 
+  const fromScripts = extractProfilePicFromJsonScripts(html);
+  if (fromScripts) candidates.push(fromScripts);
+
   for (const match of html.matchAll(/"profile_pic_url_hd":"((?:\\.|[^"\\])*)"/g)) {
-    candidates.push(match[1]);
-  }
-  for (const match of html.matchAll(/\\"profile_pic_url_hd\\":\\"(https:(?:\\\\\/|[^"\\])+)\\"/g)) {
     candidates.push(match[1]);
   }
   for (const match of html.matchAll(/"profile_pic_url":"((?:\\.|[^"\\])*)"/g)) {
     candidates.push(match[1]);
   }
-  for (const match of html.matchAll(
-    /https:\/\/[^"\s]+cdninstagram\.com\/v\/[^"\s]+\.jpg[^"\s]*/g
-  )) {
-    candidates.push(match[0]);
+  for (const match of html.matchAll(/\\"profile_pic_url_hd\\":\\"(https:(?:\\\\\/|[^"\\])+)\\"/g)) {
+    candidates.push(match[1]);
+  }
+  for (const match of html.matchAll(/\\"profile_pic_url\\":\\"(https:(?:\\\\\/|[^"\\])+)\\"/g)) {
+    candidates.push(match[1]);
+  }
+  for (const match of html.matchAll(/profile_pic_url_hd\\":\\"(https:[^\\]+)/g)) {
+    candidates.push(match[1]);
+  }
+  for (const match of html.matchAll(/profile_pic_url\\":\\"(https:[^\\]+)/g)) {
+    candidates.push(match[1]);
   }
 
   const ogImage = html.match(/property="og:image" content="([^"]+)"/)?.[1];
@@ -868,7 +913,7 @@ function extractBestProfilePicFromHtml(html) {
 
   const best = pickBestProfilePicUrl(...candidates.map(decodeJsonEscapes));
   const size = profilePicSizeFromUrl(best);
-  if (!best || size < 150) return null;
+  if (!best || size < 100) return null;
   return best;
 }
 
@@ -891,9 +936,15 @@ function mapApiUserToProfile(user, fallbackUsername) {
 async function fetchProfilePage(username) {
   const profileUrl = `https://www.instagram.com/${username}/`;
   const { data, status } = await igAxios.get(profileUrl, {
-    headers: chromeDocumentHeaders(),
+    headers: iphoneHeaders(),
   });
 
+  if (status === 429 || status === 403) {
+    const err = new Error('Instagram rate-limited profile page. Try again shortly.');
+    err.retryable = true;
+    err.reasonCode = 'rate_limited';
+    throw err;
+  }
   if (status !== 200) {
     throw new Error(`Profile page returned status ${status}`);
   }
@@ -943,7 +994,7 @@ async function fetchProfileViaApi(username, pageContext = null) {
 
   const profile = mapApiUserToProfile(data?.data?.user, username);
   if (!profile) throw new Error('User not found');
-  return profile;
+  return { ...profile, source: 'api' };
 }
 
 async function fetchProfileViaApiWithPageTokens(username) {
@@ -981,7 +1032,7 @@ async function fetchProfileViaMobileApi(username) {
 
   const profile = mapApiUserToProfile(data?.data?.user, username);
   if (!profile) throw new Error('User not found');
-  return profile;
+  return { ...profile, source: 'api' };
 }
 
 function parseProfileFromHtml(html) {
@@ -1014,6 +1065,34 @@ async function fetchProfileViaPage(username) {
   return {
     ...parsed,
     username: parsed.username || username,
+    source: 'page_scrape',
+  };
+}
+
+async function fetchProfileViaOEmbed(username) {
+  const profileUrl = `https://www.instagram.com/${username}/`;
+  const { data, status } = await igAxios.get(
+    `https://www.instagram.com/oembed/?url=${encodeURIComponent(profileUrl)}`,
+    { headers: iphoneHeaders(), timeout: 10000 }
+  );
+
+  if (status === 429 || status === 403) {
+    const err = new Error('Instagram rate-limited oEmbed. Try again shortly.');
+    err.retryable = true;
+    err.reasonCode = 'rate_limited';
+    throw err;
+  }
+  if (status !== 200 || !data?.thumbnail_url) {
+    throw new Error('oEmbed returned no profile thumbnail');
+  }
+
+  const dpUrl = normalizeMediaUrl(data.thumbnail_url);
+  return {
+    username,
+    fullName: data.author_name || null,
+    dpUrl,
+    dpSize: profilePicSizeFromUrl(dpUrl) || undefined,
+    source: 'oembed',
   };
 }
 
@@ -1022,36 +1101,39 @@ async function getProfileDp(username) {
   if (!clean) throw new Error('Username required');
 
   const errors = [];
+  const results = [];
 
   for (const fetcher of [
-    fetchProfileViaApi,
-    fetchProfileViaApiWithPageTokens,
-    fetchProfileViaMobileApi,
     fetchProfileViaPage,
+    fetchProfileViaOEmbed,
+    fetchProfileViaApiWithPageTokens,
+    fetchProfileViaApi,
   ]) {
     try {
       const profile = await fetcher(clean);
-      return {
+      const normalized = {
         ...profile,
         dpUrl: normalizeMediaUrl(profile.dpUrl),
+        dpSize: profile.dpSize || profilePicSizeFromUrl(profile.dpUrl) || undefined,
         fullName: profile.fullName ? decodeJsonEscapes(profile.fullName) : profile.fullName,
       };
+      results.push(normalized);
+      if ((normalized.dpSize || 0) >= 320) break;
     } catch (err) {
       errors.push(err.message);
     }
   }
 
-  const blocked = errors.some((msg) => /blocked|rate-limited|429/i.test(msg));
-  const proxyOn = getProxyStatus().enabled;
-  const err = new Error(
-    blocked
-      ? proxyOn
-        ? 'Instagram blocked requests through the configured proxy. Use a residential proxy (not datacenter/shared) or retry later.'
-        : 'Instagram blocked or rate-limited this server IP. Set IG_HTTP_PROXY in Railway environment variables.'
-      : `Could not fetch profile (${errors.join('; ')})`
-  );
-  err.retryable = blocked;
-  err.reasonCode = blocked ? 'rate_limited' : undefined;
+  if (results.length > 0) {
+    return results.reduce((best, current) =>
+      (current.dpSize || 0) > (best.dpSize || 0) ? current : best
+    );
+  }
+
+  const rateLimited = errors.some((msg) => /rate-limited|429|blocked/i.test(msg));
+  const err = new Error(`Could not fetch profile (${errors.join('; ')})`);
+  err.retryable = rateLimited;
+  err.reasonCode = rateLimited ? 'rate_limited' : undefined;
   throw err;
 }
 
