@@ -68,21 +68,11 @@ function cookiesFromSetCookie(setCookie = []) {
 function parseGraphqlProduct(product) {
   if (!product) return null;
 
-  if (product.carousel_media?.length) {
-    const items = product.carousel_media
-      .map((node, i) => {
-        const parsed = parseMediaNode(node);
-        return parsed ? { index: i + 1, ...parsed } : null;
-      })
-      .filter(Boolean);
-
-    if (!items.length) return null;
+  const carousel = parseSidecarMedia(product);
+  if (carousel) {
     return {
-      type: 'carousel',
-      count: items.length,
-      items,
-      title: product.caption?.text,
-      author: product.user?.username,
+      ...carousel,
+      author: carousel.author || product.user?.username || product.owner?.username,
     };
   }
 
@@ -163,6 +153,38 @@ function parseMediaNode(node) {
   };
 }
 
+function parseSidecarMedia(media) {
+  if (!media) return null;
+
+  const sidecar =
+    media.edge_sidecar_to_children?.edges ||
+    media.carousel_media ||
+    media.children?.data;
+
+  if (!sidecar?.length) return null;
+
+  const items = sidecar
+    .map((edge, i) => {
+      const parsed = parseMediaNode(edge.node || edge);
+      return parsed ? { index: i + 1, ...parsed } : null;
+    })
+    .filter(Boolean);
+
+  if (!items.length) return null;
+
+  const title =
+    media.caption?.text ||
+    media.edge_media_to_caption?.edges?.[0]?.node?.text;
+
+  return {
+    type: 'carousel',
+    count: items.length,
+    items,
+    title,
+    author: media.owner?.username || media.user?.username,
+  };
+}
+
 function parseGraphQLMedia(data) {
   const media =
     data?.items?.[0] ||
@@ -171,22 +193,8 @@ function parseGraphQLMedia(data) {
 
   if (!media) return null;
 
-  const sidecar =
-    media.edge_sidecar_to_children?.edges ||
-    media.carousel_media ||
-    media.children?.data;
-
-  if (sidecar?.length) {
-    const items = sidecar
-      .map((edge, i) => {
-        const parsed = parseMediaNode(edge.node || edge);
-        return parsed ? { index: i + 1, ...parsed } : null;
-      })
-      .filter(Boolean);
-
-    if (!items.length) return null;
-    return { type: 'carousel', count: items.length, items };
-  }
+  const carousel = parseSidecarMedia(media);
+  if (carousel) return carousel;
 
   const parsed = parseMediaNode(media);
   if (!parsed) return null;
@@ -300,6 +308,9 @@ function parseEmbedContextJson(html) {
     const media = parsed?.gql_data?.shortcode_media;
     if (!media) return null;
 
+    const carousel = parseSidecarMedia(media);
+    if (carousel) return carousel;
+
     const result = parseMediaNode(media);
     if (result) return result;
 
@@ -388,6 +399,38 @@ function parseEmbedHtmlFallback(html) {
   return null;
 }
 
+function extractCarouselFromEmbedHtml(html) {
+  const urls = new Set();
+  const patterns = [
+    /"display_url":"(https:(?:\\.|[^"\\])+)"/g,
+    /\\"display_url\\":\\"(https:(?:\\\\\/|[^"\\])+?)\\"/g,
+  ];
+
+  for (const pattern of patterns) {
+    let match = pattern.exec(html);
+    while (match) {
+      const url = normalizeMediaUrl(decodeJsonString(match[1]));
+      if (isValidMediaUrl(url)) urls.add(url);
+      match = pattern.exec(html);
+    }
+  }
+
+  const list = [...urls];
+  if (list.length < 2) return null;
+
+  return {
+    type: 'carousel',
+    count: list.length,
+    items: list.map((url, i) => ({
+      index: i + 1,
+      type: 'image',
+      url,
+      thumbnail: url,
+      ext: 'jpg',
+    })),
+  };
+}
+
 async function fetchEmbedHtml(shortcode) {
   const embedPaths = [
     `https://www.instagram.com/p/${shortcode}/embed/captioned/`,
@@ -412,6 +455,9 @@ async function fetchEmbedHtml(shortcode) {
 
       const fromContext = parseEmbedContextJson(html);
       if (fromContext) return fromContext;
+
+      const fromCarousel = extractCarouselFromEmbedHtml(html);
+      if (fromCarousel) return fromCarousel;
 
       if (html.includes('contextJSON') && /"is_video":true|"__typename":"GraphVideo"/.test(html)) {
         lastError = new Error('Video URL not available in public embed');
