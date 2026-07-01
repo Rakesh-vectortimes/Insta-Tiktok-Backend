@@ -930,6 +930,12 @@ async function fetchProfileViaApi(username, pageContext = null) {
   if (isHtmlWall(data)) {
     throw new Error('Instagram API blocked');
   }
+  if (status === 429 || status === 403) {
+    const err = new Error('Instagram rate-limited profile lookup. Try again shortly.');
+    err.retryable = true;
+    err.reasonCode = 'rate_limited';
+    throw err;
+  }
   if (status !== 200) {
     throw new Error(`Profile API returned status ${status}`);
   }
@@ -961,6 +967,12 @@ async function fetchProfileViaMobileApi(username) {
 
   if (isHtmlWall(data)) {
     throw new Error('Instagram mobile API blocked');
+  }
+  if (status === 429 || status === 403) {
+    const err = new Error('Instagram rate-limited profile lookup. Try again shortly.');
+    err.retryable = true;
+    err.reasonCode = 'rate_limited';
+    throw err;
   }
   if (status !== 200) {
     throw new Error(`Mobile profile API returned status ${status}`);
@@ -1028,10 +1040,10 @@ async function getProfileDp(username) {
     }
   }
 
-  const blocked = errors.some((msg) => /blocked/i.test(msg));
+  const blocked = errors.some((msg) => /blocked|rate-limited|429/i.test(msg));
   const err = new Error(
     blocked
-      ? 'Instagram blocked this server IP. Set IG_HTTP_PROXY in Railway environment variables.'
+      ? 'Instagram blocked or rate-limited this server IP. Wait and retry, or set IG_HTTP_PROXY in Railway environment variables.'
       : `Could not fetch profile (${errors.join('; ')})`
   );
   err.retryable = blocked;
