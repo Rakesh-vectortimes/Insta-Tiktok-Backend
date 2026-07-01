@@ -255,12 +255,34 @@ router.get('/download', async (req, res) => {
 });
 
 // ── Profile picture (DP) ──────────────────────────────────────────────────────
+router.get('/dp/:username/download', async (req, res) => {
+  const { username } = req.params;
+
+  try {
+    const profile = await getProfileDp(username);
+    const filename = `${profile.username || username}_dp.jpg`;
+    await proxyMediaStream(profile.dpUrl, res, filename, 'image/jpeg');
+  } catch (err) {
+    if (!res.headersSent) {
+      const status = err.retryable ? 503 : 500;
+      res.status(status).json({
+        error: err.message,
+        retryable: err.retryable || false,
+        ...(err.reasonCode && { reasonCode: err.reasonCode }),
+      });
+    }
+  }
+});
+
 router.get('/dp/:username', async (req, res) => {
   const { username } = req.params;
 
   try {
     const profile = await getProfileDp(username);
-    res.json(profile);
+    res.json({
+      ...profile,
+      downloadUrl: `/api/instagram/dp/${encodeURIComponent(profile.username || username)}/download`,
+    });
   } catch (err) {
     const status = err.retryable ? 503 : 500;
     res.status(status).json({

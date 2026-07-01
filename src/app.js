@@ -78,6 +78,7 @@ app.get('/', (req, res) => {
         post: 'POST /api/instagram/post',
         carouselZip: 'POST /api/instagram/carousel/zip',
         dp: 'GET /api/instagram/dp/:username',
+        dpDownload: 'GET /api/instagram/dp/:username/download',
         story: 'POST /api/instagram/story',
       },
       jobs: {

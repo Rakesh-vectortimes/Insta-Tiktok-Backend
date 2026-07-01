@@ -176,7 +176,12 @@ const options = {
           properties: {
             username: { type: 'string' },
             fullName: { type: 'string' },
-            dpUrl: { type: 'string', format: 'uri' },
+            dpUrl: { type: 'string', format: 'uri', description: 'Direct CDN image URL' },
+            downloadUrl: {
+              type: 'string',
+              description: 'API path to download the profile picture as a file',
+              example: '/api/instagram/dp/instagram/download',
+            },
             isPrivate: { type: 'boolean' },
             followers: { type: 'integer' },
           },
@@ -345,10 +350,33 @@ const options = {
           },
         },
       },
+      '/api/instagram/dp/{username}/download': {
+        get: {
+          tags: ['Instagram'],
+          summary: 'Download profile picture (DP)',
+          description: 'Streams the profile picture as a JPEG file attachment.',
+          parameters: [
+            {
+              name: 'username',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', example: 'instagram' },
+            },
+          ],
+          responses: {
+            200: {
+              description: 'Profile picture file',
+              content: { 'image/jpeg': { schema: { type: 'string', format: 'binary' } } },
+            },
+            500: { description: 'Profile fetch failed' },
+            503: { description: 'Instagram blocked server IP (set IG_HTTP_PROXY)' },
+          },
+        },
+      },
       '/api/instagram/dp/{username}': {
         get: {
           tags: ['Instagram'],
-          summary: 'Get profile picture (DP)',
+          summary: 'Get profile picture (DP) metadata',
           parameters: [
             {
               name: 'username',
