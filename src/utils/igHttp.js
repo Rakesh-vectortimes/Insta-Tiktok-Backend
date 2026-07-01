@@ -117,10 +117,10 @@ async function testProxyConnection(username = 'instagram') {
     });
 
     const html = String(res.data);
-    const hasProfilePic =
-      /profile_pic_url|cdninstagram\.com\/v\/[^"\s]+\.jpg/i.test(html) &&
-      !isHtmlWall(html);
-    const reachable = res.status === 200 && hasProfilePic;
+    const loginWall = /Log in to Instagram|loginform|not logged in/i.test(html);
+    const hasOgImage = /property="og:image"/i.test(html);
+    const hasProfileFields = /profile_pic_url/i.test(html);
+    const reachable = res.status === 200 && !loginWall && (hasOgImage || hasProfileFields);
 
     return {
       ...status,
@@ -128,10 +128,13 @@ async function testProxyConnection(username = 'instagram') {
       reachable,
       instagramStatus: res.status,
       method: 'page_scrape',
+      testUsername: username,
       ...(reachable
         ? {}
         : {
-            hint: 'Proxy reaches Instagram but profile page has no extractable DP — retry or rotate proxy IP.',
+            hint: loginWall
+              ? 'Proxy reached Instagram but got a login wall — rotate proxy IP or retry.'
+              : 'Proxy returned 200 but page had no profile metadata — try ?proxyTest=1&username=YOUR_USER',
           }),
     };
   } catch (err) {

@@ -101,7 +101,9 @@ app.get('/', (req, res) => {
 app.get('/health', async (req, res) => {
   const proxy = getProxyStatus();
   const proxyTest =
-    req.query.proxyTest === '1' ? await testProxyConnection() : undefined;
+    req.query.proxyTest === '1'
+      ? await testProxyConnection(req.query.username || 'priyabhavanishankar')
+      : undefined;
 
   const response = {
     status: 'ok',
