@@ -1,6 +1,6 @@
-const axios = require('axios');
 const {
   igAxios,
+  igCdnAxios,
   chromeDocumentHeaders,
   chromeApiHeaders,
   iphoneHeaders,
@@ -213,7 +213,7 @@ function parseGraphQLMedia(data) {
 
 async function fetchOEmbed(pageUrl) {
   try {
-    const { data } = await axios.get(
+    const { data } = await igAxios.get(
       `https://www.instagram.com/oembed/?url=${encodeURIComponent(pageUrl)}`,
       { headers: { 'User-Agent': randomUA() }, timeout: 10000 }
     );
@@ -714,7 +714,7 @@ async function proxyMediaStream(mediaUrl, res, filename, contentType = 'video/mp
   const url = normalizeMediaUrl(mediaUrl);
 
   try {
-    const response = await igAxios.get(url, {
+    const response = await igCdnAxios.get(url, {
       responseType: 'arraybuffer',
       headers: {
         'User-Agent': randomUA(),
@@ -744,7 +744,7 @@ async function proxyMediaStream(mediaUrl, res, filename, contentType = 'video/mp
   } catch (err) {
     if (err.response?.status === 403 || err.response?.status === 429) {
       const blocked = new Error(
-        'Instagram CDN blocked this server IP. Set IG_HTTP_PROXY in Railway environment variables.'
+        'Instagram CDN blocked this download. Retry later — CDN requests are not proxied to save bandwidth.'
       );
       blocked.retryable = true;
       blocked.reasonCode = 'rate_limited';
@@ -761,7 +761,7 @@ function isDirectMediaUrl(url) {
 
 async function downloadDirect(url, outputPath) {
   const mediaUrl = normalizeMediaUrl(url);
-  const response = await igAxios.get(mediaUrl, {
+  const response = await igCdnAxios.get(mediaUrl, {
     responseType: 'stream',
     headers: {
       'User-Agent': randomUA(),

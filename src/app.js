@@ -21,6 +21,7 @@ const { queueStats } = require('./services/jobQueue');
 const { videoCacheStats } = require('./services/videoCache');
 const { inFlightStats } = require('./services/inFlightDedup');
 const { storageStatus } = require('./services/storage');
+const { getProxyStatus } = require('./utils/igHttp');
 
 const app = express();
 
@@ -112,6 +113,7 @@ app.get('/health', async (req, res) => {
     queues: {
       download: downloadQueue.stats(),
     },
+    proxy: getProxyStatus(),
   };
 
   res.json(response);
@@ -123,6 +125,12 @@ const PORT = process.env.PORT || 4000;
 
 connectRedis().then(() => {
   app.listen(PORT, '0.0.0.0', () => {
+    const proxy = getProxyStatus();
+    if (proxy.enabled) {
+      console.log(`[proxy] Instagram metadata via ${proxy.host}:${proxy.port}`);
+    } else if (proxy.configured === 'invalid') {
+      console.warn('[proxy] IG_HTTP_PROXY is set but invalid — proxy disabled');
+    }
     console.log(`✅ Server running on port ${PORT} (public-only)`);
   });
 });

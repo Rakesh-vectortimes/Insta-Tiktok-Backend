@@ -11,8 +11,36 @@ function getProxyUrl() {
   return process.env.IG_HTTP_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || null;
 }
 
-function createIgAxios(extra = {}) {
-  const proxyUrl = getProxyUrl();
+function getProxyStatus() {
+  const proxyUrl = process.env.IG_HTTP_PROXY || null;
+  if (!proxyUrl) {
+    return {
+      enabled: false,
+      configured: 'no',
+      scope: 'instagram-metadata-only',
+    };
+  }
+
+  try {
+    const url = new URL(proxyUrl);
+    return {
+      enabled: true,
+      configured: 'yes',
+      scope: 'instagram-metadata-only',
+      host: url.hostname,
+      port: url.port || (url.protocol === 'https:' ? '443' : '80'),
+    };
+  } catch {
+    return {
+      enabled: false,
+      configured: 'invalid',
+      scope: 'instagram-metadata-only',
+    };
+  }
+}
+
+function createIgAxios({ useProxy = true, ...extra } = {}) {
+  const proxyUrl = useProxy ? getProxyUrl() : null;
   const config = {
     timeout: 20000,
     validateStatus: (s) => s < 500,
@@ -29,7 +57,10 @@ function createIgAxios(extra = {}) {
   return axios.create(config);
 }
 
-const igAxios = createIgAxios();
+// instagram.com / i.instagram.com metadata — routes through IG_HTTP_PROXY when set
+const igAxios = createIgAxios({ useProxy: true });
+// CDN (cdninstagram.com, fbcdn.net) — direct, no proxy (saves bandwidth)
+const igCdnAxios = createIgAxios({ useProxy: false });
 
 function chromeDocumentHeaders(referer) {
   return {
@@ -78,8 +109,10 @@ function iphoneHeaders() {
 
 module.exports = {
   igAxios,
+  igCdnAxios,
   createIgAxios,
   getProxyUrl,
+  getProxyStatus,
   chromeDocumentHeaders,
   chromeApiHeaders,
   iphoneHeaders,
