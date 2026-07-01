@@ -27,10 +27,23 @@ const app = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
 app.use(express.json());
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-  customSiteTitle: 'Downloader API Docs',
-}));
-app.get('/api-docs.json', (req, res) => res.json(swaggerSpec));
+function swaggerSpecForRequest(req) {
+  const spec = JSON.parse(JSON.stringify(swaggerSpec));
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  const host = req.get('host');
+  spec.servers = [
+    { url: `${proto}://${host}`, description: 'Current server' },
+    { url: 'http://localhost:4000', description: 'Local development' },
+  ];
+  return spec;
+}
+
+app.use('/api-docs', swaggerUi.serve, (req, res, next) => {
+  swaggerUi.setup(swaggerSpecForRequest(req), {
+    customSiteTitle: 'Downloader API Docs',
+  })(req, res, next);
+});
+app.get('/api-docs.json', (req, res) => res.json(swaggerSpecForRequest(req)));
 
 const limiter = rateLimit({
   windowMs: parseInt(process.env.API_RATE_LIMIT_WINDOW_MS || '600000', 10),

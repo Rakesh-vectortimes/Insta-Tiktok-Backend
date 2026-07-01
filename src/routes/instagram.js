@@ -1,8 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { igAxios, chromeApiHeaders } = require('../utils/igHttp');
 const archiver = require('archiver');
-const path = require('path');
+const path = require('path';
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const {
@@ -22,6 +21,7 @@ const {
   downloadDirect,
   isDirectMediaUrl,
   normalizePostUrl,
+  getProfileDp,
 } = require('../services/igScraper');
 const { analyzeUrl } = require('../services/analyzeUrl');
 const {
@@ -259,27 +259,15 @@ router.get('/dp/:username', async (req, res) => {
   const { username } = req.params;
 
   try {
-    // Fetch profile page and extract profile_pic_url_hd
-    const { data } = await igAxios.get(
-      `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
-      {
-        headers: {
-          ...chromeApiHeaders(`https://www.instagram.com/${username}/`),
-        },
-      }
-    );
-    const user = data?.data?.user;
-    if (!user) throw new Error('User not found');
-
-    res.json({
-      username: user.username,
-      fullName: user.full_name,
-      dpUrl: user.profile_pic_url_hd,
-      isPrivate: user.is_private,
-      followers: user.edge_followed_by?.count
-    });
+    const profile = await getProfileDp(username);
+    res.json(profile);
   } catch (err) {
-    res.status(500).json({ error: 'Could not fetch profile. Instagram may require login.' });
+    const status = err.retryable ? 503 : 500;
+    res.status(status).json({
+      error: err.message,
+      retryable: err.retryable || false,
+      ...(err.reasonCode && { reasonCode: err.reasonCode }),
+    });
   }
 });
 

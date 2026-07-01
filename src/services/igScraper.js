@@ -661,10 +661,113 @@ async function downloadDirect(url, outputPath) {
   return outputPath;
 }
 
+function isHtmlWall(data) {
+  return typeof data === 'string' && /<!DOCTYPE html|<html/i.test(data.slice(0, 300));
+}
+
+function decodeJsonEscapes(value) {
+  return String(value)
+    .replace(/\\u0026/g, '&')
+    .replace(/\\\//g, '/')
+    .replace(/\\"/g, '"');
+}
+
+function parseProfileFromHtml(html) {
+  const dpUrl =
+    html.match(/"profile_pic_url_hd":"((?:\\.|[^"\\])*)"/)?.[1] ||
+    html.match(/property="og:image" content="([^"]+)"/)?.[1];
+
+  if (!dpUrl) return null;
+
+  const fullName =
+    html.match(/"full_name":"((?:\\.|[^"\\])*)"/)?.[1] ||
+    html.match(/property="og:title" content="([^"]+)"/)?.[1];
+  const username = html.match(/"username":"([^"]+)"/)?.[1];
+  const followers = html.match(/"edge_followed_by":\{"count":(\d+)/)?.[1];
+
+  return {
+    username: username || null,
+    fullName: fullName ? decodeJsonEscapes(fullName) : null,
+    dpUrl: decodeJsonEscapes(dpUrl),
+    isPrivate: /"is_private":true/.test(html),
+    followers: followers ? parseInt(followers, 10) : undefined,
+  };
+}
+
+async function fetchProfileViaApi(username) {
+  const profileUrl = `https://www.instagram.com/${username}/`;
+  const { data } = await igAxios.get(
+    `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
+    { headers: chromeApiHeaders(profileUrl) }
+  );
+
+  if (isHtmlWall(data)) {
+    throw new Error('Instagram API blocked');
+  }
+
+  const user = data?.data?.user;
+  if (!user) throw new Error('User not found');
+
+  return {
+    username: user.username,
+    fullName: user.full_name,
+    dpUrl: user.profile_pic_url_hd || user.profile_pic_url,
+    isPrivate: user.is_private,
+    followers: user.edge_followed_by?.count,
+  };
+}
+
+async function fetchProfileViaPage(username) {
+  const profileUrl = `https://www.instagram.com/${username}/`;
+  const { data, status } = await igAxios.get(profileUrl, {
+    headers: chromeDocumentHeaders(),
+  });
+
+  if (status !== 200) {
+    throw new Error(`Profile page returned status ${status}`);
+  }
+
+  const parsed = parseProfileFromHtml(String(data));
+  if (!parsed?.dpUrl) {
+    throw new Error('Profile picture not found in page HTML');
+  }
+
+  return {
+    ...parsed,
+    username: parsed.username || username,
+  };
+}
+
+async function getProfileDp(username) {
+  const clean = String(username || '').replace(/^@/, '').trim();
+  if (!clean) throw new Error('Username required');
+
+  const errors = [];
+
+  for (const fetcher of [fetchProfileViaApi, fetchProfileViaPage]) {
+    try {
+      return await fetcher(clean);
+    } catch (err) {
+      errors.push(err.message);
+    }
+  }
+
+  const blocked = errors.some((msg) => /blocked/i.test(msg));
+  const err = new Error(
+    blocked
+      ? 'Instagram blocked this server IP. Set IG_HTTP_PROXY in Railway environment variables.'
+      : `Could not fetch profile (${errors.join('; ')})`
+  );
+  err.retryable = blocked;
+  err.reasonCode = blocked ? 'rate_limited' : undefined;
+  throw err;
+}
+
 module.exports = {
   scrapeInstagram,
   getReel,
   getPost,
+  getProfileDp,
   pickVideoByQuality,
   proxyMediaStream,
   downloadToTemp: downloadDirect,
