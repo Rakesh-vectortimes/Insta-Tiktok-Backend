@@ -1,6 +1,7 @@
 const {
   igAxios,
   igCdnAxios,
+  getProxyStatus,
   chromeDocumentHeaders,
   chromeApiHeaders,
   iphoneHeaders,
@@ -835,6 +836,35 @@ function pickBestProfilePicUrl(...urls) {
   return best;
 }
 
+function buildPageCookies(setCookie, html) {
+  const jar = {};
+
+  for (const raw of [].concat(setCookie || [])) {
+    const [pair] = String(raw).split(';');
+    const eq = pair.indexOf('=');
+    if (eq > 0) jar[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+  }
+
+  const csrf = html.match(/"csrf_token":"([^"]+)"/)?.[1];
+  if (csrf) jar.csrftoken = csrf;
+
+  const mid = html.match(/"machine_id":"([^"]+)"/)?.[1];
+  if (mid) jar.mid = mid;
+
+  const igDid =
+    html.match(/"device_id":"([^"]+)"/)?.[1] || html.match(/"ig_did":"([^"]+)"/)?.[1];
+  if (igDid) jar.ig_did = igDid;
+
+  return jar;
+}
+
+function formatCookieHeader(cookies) {
+  const parts = Object.entries(cookies)
+    .filter(([, value]) => value)
+    .map(([name, value]) => `${name}=${value}`);
+  return parts.length ? `${parts.join('; ')};` : '';
+}
+
 function extractPageTokens(html) {
   const lsd =
     html.match(/"LSD",\[\],\{"token":"([^"]+)"/)?.[1] ||
@@ -935,9 +965,10 @@ function mapApiUserToProfile(user, fallbackUsername) {
 
 async function fetchProfilePage(username) {
   const profileUrl = `https://www.instagram.com/${username}/`;
-  const { data, status } = await igAxios.get(profileUrl, {
-    headers: iphoneHeaders(),
+  const response = await igAxios.get(profileUrl, {
+    headers: chromeDocumentHeaders(),
   });
+  const { data, status, headers: responseHeaders } = response;
 
   if (status === 429 || status === 403) {
     const err = new Error('Instagram rate-limited profile page. Try again shortly.');
@@ -950,29 +981,38 @@ async function fetchProfilePage(username) {
   }
 
   const html = String(data);
+  const tokens = extractPageTokens(html);
+  const cookies = buildPageCookies(responseHeaders['set-cookie'], html);
+
   return {
     html,
-    tokens: extractPageTokens(html),
+    tokens,
+    cookies,
     userId: html.match(/"user_id":"(\d+)"/)?.[1] || null,
     profileUrl,
   };
 }
 
-function buildProfileApiHeaders(profileUrl, tokens = {}) {
+function buildProfileApiHeaders(profileUrl, pageContext = {}) {
   const headers = { ...chromeApiHeaders(profileUrl) };
+  const tokens = pageContext.tokens || {};
+  const cookies = { ...(pageContext.cookies || {}) };
+
   if (tokens.lsd) {
     headers['X-FB-LSD'] = tokens.lsd;
     headers['X-CSRFToken'] = tokens.csrf || tokens.lsd;
   }
-  if (tokens.csrf) {
-    headers.Cookie = `csrftoken=${tokens.csrf};`;
-  }
+  if (tokens.csrf) cookies.csrftoken = tokens.csrf;
+
+  const cookieHeader = formatCookieHeader(cookies);
+  if (cookieHeader) headers.Cookie = cookieHeader;
+
   return headers;
 }
 
 async function fetchProfileViaApi(username, pageContext = null) {
   const profileUrl = pageContext?.profileUrl || `https://www.instagram.com/${username}/`;
-  const headers = buildProfileApiHeaders(profileUrl, pageContext?.tokens);
+  const headers = buildProfileApiHeaders(profileUrl, pageContext || {});
 
   const { data, status } = await igAxios.get(
     `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
@@ -982,7 +1022,7 @@ async function fetchProfileViaApi(username, pageContext = null) {
   if (isHtmlWall(data)) {
     throw new Error('Instagram API blocked');
   }
-  if (status === 429 || status === 403) {
+  if (status === 429 || status === 403 || status === 401) {
     const err = new Error('Instagram rate-limited profile lookup. Try again shortly.');
     err.retryable = true;
     err.reasonCode = 'rate_limited';
@@ -1002,8 +1042,14 @@ async function fetchProfileViaApiWithPageTokens(username) {
   return fetchProfileViaApi(username, page);
 }
 
-async function fetchProfileViaMobileApi(username) {
-  const profileUrl = `https://www.instagram.com/${username}/`;
+async function fetchProfileViaMobileWithPage(username) {
+  const page = await fetchProfilePage(username);
+  return fetchProfileViaMobileApi(username, page);
+}
+
+async function fetchProfileViaMobileApi(username, pageContext = null) {
+  const profileUrl = pageContext?.profileUrl || `https://www.instagram.com/${username}/`;
+  const cookieHeader = pageContext?.cookies ? formatCookieHeader(pageContext.cookies) : '';
   const { data, status } = await igAxios.get(
     `https://i.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
     {
@@ -1013,6 +1059,7 @@ async function fetchProfileViaMobileApi(username) {
         'X-IG-App-ID': '936619743392459',
         Accept: 'application/json',
         Referer: profileUrl,
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
       },
     }
   );
@@ -1020,7 +1067,7 @@ async function fetchProfileViaMobileApi(username) {
   if (isHtmlWall(data)) {
     throw new Error('Instagram mobile API blocked');
   }
-  if (status === 429 || status === 403) {
+  if (status === 429 || status === 403 || status === 401) {
     const err = new Error('Instagram rate-limited profile lookup. Try again shortly.');
     err.retryable = true;
     err.reasonCode = 'rate_limited';
@@ -1032,7 +1079,7 @@ async function fetchProfileViaMobileApi(username) {
 
   const profile = mapApiUserToProfile(data?.data?.user, username);
   if (!profile) throw new Error('User not found');
-  return { ...profile, source: 'api' };
+  return { ...profile, source: 'mobile_api' };
 }
 
 function parseProfileFromHtml(html) {
@@ -1056,15 +1103,32 @@ function parseProfileFromHtml(html) {
 }
 
 async function fetchProfileViaPage(username) {
-  const page = await fetchProfilePage(username);
-  const parsed = parseProfileFromHtml(page.html);
-  if (!parsed?.dpUrl) {
+  const profileUrl = `https://www.instagram.com/${username}/`;
+  let bestParsed = null;
+
+  for (const headers of [iphoneHeaders(), chromeDocumentHeaders()]) {
+    const { data, status } = await igAxios.get(profileUrl, {
+      headers,
+      validateStatus: (s) => s < 500,
+    });
+    if (status !== 200) continue;
+
+    const parsed = parseProfileFromHtml(String(data));
+    if (!parsed?.dpUrl) continue;
+
+    if (!bestParsed || (parsed.dpSize || 0) > (bestParsed.dpSize || 0)) {
+      bestParsed = parsed;
+    }
+    if ((parsed.dpSize || 0) >= 320) break;
+  }
+
+  if (!bestParsed?.dpUrl) {
     throw new Error('Profile picture not found in page HTML');
   }
 
   return {
-    ...parsed,
-    username: parsed.username || username,
+    ...bestParsed,
+    username: bestParsed.username || username,
     source: 'page_scrape',
   };
 }
@@ -1096,6 +1160,26 @@ async function fetchProfileViaOEmbed(username) {
   };
 }
 
+function getProfileDpFetchers() {
+  if (getProxyStatus().enabled) {
+    return [
+      fetchProfileViaApiWithPageTokens,
+      fetchProfileViaMobileWithPage,
+      fetchProfileViaApi,
+      fetchProfileViaPage,
+      fetchProfileViaOEmbed,
+    ];
+  }
+
+  return [
+    fetchProfileViaApiWithPageTokens,
+    fetchProfileViaApi,
+    fetchProfileViaMobileWithPage,
+    fetchProfileViaPage,
+    fetchProfileViaOEmbed,
+  ];
+}
+
 async function getProfileDp(username) {
   const clean = String(username || '').replace(/^@/, '').trim();
   if (!clean) throw new Error('Username required');
@@ -1103,12 +1187,7 @@ async function getProfileDp(username) {
   const errors = [];
   const results = [];
 
-  for (const fetcher of [
-    fetchProfileViaPage,
-    fetchProfileViaOEmbed,
-    fetchProfileViaApiWithPageTokens,
-    fetchProfileViaApi,
-  ]) {
+  for (const fetcher of getProfileDpFetchers()) {
     try {
       const profile = await fetcher(clean);
       const normalized = {
@@ -1125,9 +1204,12 @@ async function getProfileDp(username) {
   }
 
   if (results.length > 0) {
-    return results.reduce((best, current) =>
-      (current.dpSize || 0) > (best.dpSize || 0) ? current : best
-    );
+    const best = results.reduce((a, b) => ((a.dpSize || 0) > (b.dpSize || 0) ? a : b));
+    if ((best.dpSize || 0) < 320) {
+      best.qualityNote =
+        'Instagram only exposed a thumbnail for this profile. HD (320px) requires API access.';
+    }
+    return best;
   }
 
   const rateLimited = errors.some((msg) => /rate-limited|429|blocked/i.test(msg));
