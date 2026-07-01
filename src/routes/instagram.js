@@ -22,6 +22,7 @@ const {
   isDirectMediaUrl,
   normalizePostUrl,
   getProfileDp,
+  assertBufferMatchesContentType,
 } = require('../services/igScraper');
 const { analyzeUrl } = require('../services/analyzeUrl');
 const {
@@ -164,7 +165,7 @@ router.get('/reel/stream', async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
 
-  const baseName = `reel_${Date.now()}_${media.quality}p`;
+  const baseName = `instagram_reel_${media.quality}p`;
   const ytdlpFormat = ['--format', getVideoFormatString(media.quality)];
 
   // Try GraphQL scraper first (no rate limit)
@@ -184,18 +185,22 @@ router.get('/reel/stream', async (req, res) => {
     await downloadToTemp(videoUrl, videoPath);
     await extractMp3(videoPath, audioPath, getAudioBitrate(media.quality));
 
+    const audioBuf = fs.readFileSync(audioPath);
+    assertBufferMatchesContentType(audioBuf, 'audio/mpeg');
+
     res.setHeader('Content-Disposition', `attachment; filename="${baseName}.mp3"`);
     res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', audioBuf.length);
+    res.end(audioBuf);
 
-    const stream = fs.createReadStream(audioPath);
-    stream.pipe(res);
-    stream.on('close', () => {
-      fs.unlink(videoPath, () => {});
-      fs.unlink(audioPath, () => {});
-    });
+    fs.unlink(videoPath, () => {});
+    fs.unlink(audioPath, () => {});
     return;
   } catch (scrapeErr) {
     console.error('[scraper]', scrapeErr.message);
+    if (scrapeErr.statusCode) {
+      return sendStreamError(res, scrapeErr);
+    }
     const err = createPublicScopeError(scrapeErr);
     return res.status(422).json({
       error: err.message,
@@ -248,7 +253,7 @@ async function streamPostTarget(target, req, res, { filenamePrefix = 'post', sli
     }
 
     const suffix = slideIndex ? `_slide${slideIndex}` : '';
-    const baseName = `${filenamePrefix}${suffix}_${Date.now()}_${media.quality}p`;
+    const baseName = `instagram_${filenamePrefix}${suffix}_${media.quality}p`;
     const videoUrl =
       pickVideoByQuality(target.videoVersions, media.quality) || target.url;
 
@@ -264,21 +269,36 @@ async function streamPostTarget(target, req, res, { filenamePrefix = 'post', sli
     await downloadToTemp(videoUrl, videoPath);
     await extractMp3(videoPath, audioPath, getAudioBitrate(media.quality));
 
-    res.setHeader('Content-Disposition', `attachment; filename="${baseName}.mp3"`);
-    res.setHeader('Content-Type', 'audio/mpeg');
-
-    const stream = fs.createReadStream(audioPath);
-    stream.pipe(res);
-    stream.on('close', () => {
+    const audioBuf = fs.readFileSync(audioPath);
+    try {
+      assertBufferMatchesContentType(audioBuf, 'audio/mpeg');
+    } catch (err) {
       fs.unlink(videoPath, () => {});
       fs.unlink(audioPath, () => {});
-    });
+      throw err;
+    }
+
+    res.setHeader('Content-Disposition', `attachment; filename="${baseName}.mp3"`);
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', audioBuf.length);
+    res.end(audioBuf);
+
+    fs.unlink(videoPath, () => {});
+    fs.unlink(audioPath, () => {});
     return;
+  }
+
+  if (req.query.format === 'mp4' || req.query.format === 'mp3') {
+    const err = new Error(
+      'This post is a photo, not a video. Use GET /api/instagram/carousel/slide?index=N for carousel images.'
+    );
+    err.statusCode = 400;
+    throw err;
   }
 
   const ext = target.ext || 'jpg';
   const suffix = slideIndex ? `_slide${slideIndex}` : '';
-  const filename = `${filenamePrefix}${suffix}_${Date.now()}.${ext}`;
+  const filename = `instagram_${filenamePrefix}${suffix}.${ext}`;
   const contentType = guessContentType(target.url, filename);
   await proxyMediaStream(target.url, res, filename, contentType);
 }
@@ -287,6 +307,14 @@ function sendStreamError(res, err) {
   if (res.headersSent) return;
   if (err.statusCode === 400) {
     res.status(400).json({ error: err.message });
+    return;
+  }
+  if (err.statusCode === 503 || err.retryable) {
+    res.status(503).json({
+      error: err.message,
+      retryable: true,
+      ...(err.reasonCode && { reasonCode: err.reasonCode }),
+    });
     return;
   }
   const scoped = createPublicScopeError(err);

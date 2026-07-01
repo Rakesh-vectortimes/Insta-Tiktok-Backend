@@ -666,30 +666,81 @@ async function getPost(pageUrl) {
   return scrapeInstagram(pageUrl);
 }
 
+function sniffMediaType(buf) {
+  if (!buf?.length || buf.length < 4) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (buf.slice(4, 8).toString('ascii') === 'ftyp') return 'video/mp4';
+  if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return 'audio/mpeg';
+  if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return 'audio/mpeg';
+  if (buf[0] === 0x7b || buf[0] === 0x3c) return 'text/error';
+  return null;
+}
+
+function assertBufferMatchesContentType(buf, contentType) {
+  const sniffed = sniffMediaType(buf);
+  if (!sniffed || sniffed === 'text/error') {
+    const err = new Error(
+      'CDN returned invalid media. The download may be blocked or the post is a photo—use /carousel/slide for images.'
+    );
+    err.statusCode = 422;
+    throw err;
+  }
+
+  if (contentType.startsWith('video/') && sniffed !== 'video/mp4') {
+    const err = new Error(
+      'This post is not a video. For photo posts use GET /api/instagram/carousel/slide or /post/stream without format=mp4.'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (contentType.startsWith('audio/') && sniffed !== 'audio/mpeg') {
+    const err = new Error('Audio extraction failed — downloaded file is not a valid MP3.');
+    err.statusCode = 422;
+    throw err;
+  }
+
+  if (contentType.startsWith('image/') && !sniffed.startsWith('image/')) {
+    const err = new Error('Expected an image file but received a different media type.');
+    err.statusCode = 422;
+    throw err;
+  }
+
+  return sniffed;
+}
+
 async function proxyMediaStream(mediaUrl, res, filename, contentType = 'video/mp4') {
   const url = normalizeMediaUrl(mediaUrl);
 
   try {
     const response = await igAxios.get(url, {
-      responseType: 'stream',
+      responseType: 'arraybuffer',
       headers: {
         'User-Agent': randomUA(),
         Referer: 'https://www.instagram.com/',
         Accept: '*/*',
       },
       timeout: 120000,
+      maxContentLength: 100 * 1024 * 1024,
+      maxBodyLength: 100 * 1024 * 1024,
     });
 
     if (response.status !== 200) {
       const err = new Error(`CDN request failed with status ${response.status}`);
       err.retryable = response.status === 403 || response.status === 429;
       err.reasonCode = 'rate_limited';
+      err.statusCode = err.retryable ? 503 : 422;
       throw err;
     }
 
+    const buf = Buffer.from(response.data);
+    const sniffed = assertBufferMatchesContentType(buf, contentType);
+
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', contentType);
-    response.data.pipe(res);
+    res.setHeader('Content-Type', sniffed);
+    res.setHeader('Content-Length', buf.length);
+    res.end(buf);
   } catch (err) {
     if (err.response?.status === 403 || err.response?.status === 429) {
       const blocked = new Error(
@@ -697,6 +748,7 @@ async function proxyMediaStream(mediaUrl, res, filename, contentType = 'video/mp
       );
       blocked.retryable = true;
       blocked.reasonCode = 'rate_limited';
+      blocked.statusCode = 503;
       throw blocked;
     }
     throw err;
@@ -865,4 +917,5 @@ module.exports = {
   isDirectMediaUrl,
   normalizePostUrl,
   isInstagramPageUrl,
+  assertBufferMatchesContentType,
 };
