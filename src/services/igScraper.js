@@ -621,18 +621,40 @@ async function getPost(pageUrl) {
 }
 
 async function proxyMediaStream(mediaUrl, res, filename, contentType = 'video/mp4') {
-  const response = await axios.get(mediaUrl, {
-    responseType: 'stream',
-    headers: {
-      'User-Agent': randomUA(),
-      Referer: 'https://www.instagram.com/',
-    },
-    timeout: 120000,
-  });
+  const url = normalizeMediaUrl(mediaUrl);
 
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.setHeader('Content-Type', contentType);
-  response.data.pipe(res);
+  try {
+    const response = await igAxios.get(url, {
+      responseType: 'stream',
+      headers: {
+        'User-Agent': randomUA(),
+        Referer: 'https://www.instagram.com/',
+        Accept: '*/*',
+      },
+      timeout: 120000,
+    });
+
+    if (response.status !== 200) {
+      const err = new Error(`CDN request failed with status ${response.status}`);
+      err.retryable = response.status === 403 || response.status === 429;
+      err.reasonCode = 'rate_limited';
+      throw err;
+    }
+
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', contentType);
+    response.data.pipe(res);
+  } catch (err) {
+    if (err.response?.status === 403 || err.response?.status === 429) {
+      const blocked = new Error(
+        'Instagram CDN blocked this server IP. Set IG_HTTP_PROXY in Railway environment variables.'
+      );
+      blocked.retryable = true;
+      blocked.reasonCode = 'rate_limited';
+      throw blocked;
+    }
+    throw err;
+  }
 }
 
 function isDirectMediaUrl(url) {
@@ -640,7 +662,8 @@ function isDirectMediaUrl(url) {
 }
 
 async function downloadDirect(url, outputPath) {
-  const response = await axios.get(url, {
+  const mediaUrl = normalizeMediaUrl(url);
+  const response = await igAxios.get(mediaUrl, {
     responseType: 'stream',
     headers: {
       'User-Agent': randomUA(),
@@ -648,6 +671,10 @@ async function downloadDirect(url, outputPath) {
     },
     timeout: 120000,
   });
+
+  if (response.status !== 200) {
+    throw new Error(`CDN download failed with status ${response.status}`);
+  }
 
   const fs = require('fs');
   await new Promise((resolve, reject) => {
@@ -669,7 +696,19 @@ function decodeJsonEscapes(value) {
   return String(value)
     .replace(/\\u0026/g, '&')
     .replace(/\\\//g, '/')
-    .replace(/\\"/g, '"');
+    .replace(/\\"/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(parseInt(num, 10)));
+}
+
+function normalizeMediaUrl(url) {
+  if (!url) return url;
+  return decodeJsonEscapes(url);
 }
 
 function parseProfileFromHtml(html) {
@@ -711,7 +750,7 @@ async function fetchProfileViaApi(username) {
   return {
     username: user.username,
     fullName: user.full_name,
-    dpUrl: user.profile_pic_url_hd || user.profile_pic_url,
+    dpUrl: normalizeMediaUrl(user.profile_pic_url_hd || user.profile_pic_url),
     isPrivate: user.is_private,
     followers: user.edge_followed_by?.count,
   };
@@ -746,7 +785,12 @@ async function getProfileDp(username) {
 
   for (const fetcher of [fetchProfileViaApi, fetchProfileViaPage]) {
     try {
-      return await fetcher(clean);
+      const profile = await fetcher(clean);
+      return {
+        ...profile,
+        dpUrl: normalizeMediaUrl(profile.dpUrl),
+        fullName: profile.fullName ? decodeJsonEscapes(profile.fullName) : profile.fullName,
+      };
     } catch (err) {
       errors.push(err.message);
     }
