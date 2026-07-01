@@ -138,38 +138,45 @@ const options = {
           },
         },
         PostResponse: {
-          oneOf: [
-            {
-              type: 'object',
-              properties: {
-                type: { type: 'string', enum: ['image', 'video'] },
-                url: { type: 'string', format: 'uri' },
-                thumbnail: { type: 'string', format: 'uri' },
-                ext: { type: 'string' },
-                title: { type: 'string' },
-              },
-            },
-            {
-              type: 'object',
-              properties: {
-                type: { type: 'string', enum: ['carousel'] },
-                count: { type: 'integer' },
-                items: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      index: { type: 'integer' },
-                      url: { type: 'string' },
-                      thumbnail: { type: 'string' },
-                      ext: { type: 'string' },
-                      type: { type: 'string', enum: ['image', 'video'] },
-                    },
-                  },
+          type: 'object',
+          properties: {
+            type: { type: 'string', enum: ['image', 'video', 'carousel'] },
+            url: { type: 'string', format: 'uri' },
+            thumbnail: { type: 'string', format: 'uri' },
+            ext: { type: 'string' },
+            title: { type: 'string' },
+            count: { type: 'integer' },
+            items: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  index: { type: 'integer' },
+                  url: { type: 'string' },
+                  thumbnail: { type: 'string' },
+                  ext: { type: 'string' },
+                  type: { type: 'string', enum: ['image', 'video'] },
                 },
               },
             },
-          ],
+            downloadUrl: {
+              type: 'string',
+              description: 'Default download link (opens file in browser)',
+              example: '/api/instagram/post/stream?url=https%3A%2F%2Fwww.instagram.com%2Fp%2FABC%2F',
+            },
+            downloads: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  format: { type: 'string', example: 'mp4' },
+                  quality: { type: 'integer', nullable: true, example: 720 },
+                  label: { type: 'string', example: '720p MP4' },
+                  url: { type: 'string' },
+                },
+              },
+            },
+          },
         },
         DpResponse: {
           type: 'object',
@@ -306,6 +313,52 @@ const options = {
           },
         },
       },
+      '/api/instagram/post/stream': {
+        get: {
+          tags: ['Instagram'],
+          summary: 'Download post (image, video, or single carousel slide)',
+          description:
+            'Streams a single image or video post. For carousels, pass index (1-based) or use GET /carousel/stream for ZIP.',
+          parameters: [
+            {
+              name: 'url',
+              in: 'query',
+              required: true,
+              schema: { type: 'string', format: 'uri' },
+              description: 'Instagram post URL',
+            },
+            {
+              name: 'index',
+              in: 'query',
+              schema: { type: 'integer', minimum: 1 },
+              description: 'Carousel slide number (1-based)',
+            },
+            {
+              name: 'format',
+              in: 'query',
+              schema: { type: 'string', enum: ['mp4', 'mp3'], default: 'mp4' },
+              description: 'Video posts only',
+            },
+            {
+              name: 'quality',
+              in: 'query',
+              schema: { type: 'string', enum: ['360', '720', '1080'], default: '720' },
+              description: 'Video posts only',
+            },
+          ],
+          responses: {
+            200: {
+              description: 'Media file download',
+              content: {
+                'video/mp4': { schema: { type: 'string', format: 'binary' } },
+                'image/jpeg': { schema: { type: 'string', format: 'binary' } },
+              },
+            },
+            400: { description: 'Invalid URL or carousel index' },
+            422: { description: 'Post not accessible' },
+          },
+        },
+      },
       '/api/instagram/post': {
         post: {
           tags: ['Instagram'],
@@ -326,6 +379,30 @@ const options = {
             },
             400: { description: 'Missing URL' },
             500: { description: 'Fetch failed' },
+          },
+        },
+      },
+      '/api/instagram/carousel/stream': {
+        get: {
+          tags: ['Instagram'],
+          summary: 'Download carousel as ZIP (link)',
+          description: 'Same as POST /carousel/zip but usable as a GET download link from POST /post response.',
+          parameters: [
+            {
+              name: 'url',
+              in: 'query',
+              required: true,
+              schema: { type: 'string', format: 'uri' },
+              description: 'Instagram carousel post URL',
+            },
+          ],
+          responses: {
+            200: {
+              description: 'ZIP archive',
+              content: { 'application/zip': { schema: { type: 'string', format: 'binary' } } },
+            },
+            400: { description: 'Missing URL' },
+            422: { description: 'Post not accessible' },
           },
         },
       },

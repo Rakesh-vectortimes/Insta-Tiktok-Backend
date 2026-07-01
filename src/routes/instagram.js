@@ -31,6 +31,7 @@ const {
   getVideoFormatString,
   getAudioBitrate,
   buildDownloadLinks,
+  buildPostDownloadLinks,
 } = require('../utils/mediaOptions');
 
 function mapSource(source) {
@@ -56,6 +57,61 @@ function sendAnalyzeError(res, err, fallbackStatus = 500) {
     ...(err.reasonCode && { reasonCode: err.reasonCode }),
     ...(err.details && { details: err.details }),
   });
+}
+
+function guessContentType(url, filename = '') {
+  const ref = `${filename} ${url}`.toLowerCase();
+  if (ref.includes('.mp4') || ref.includes('video')) return 'video/mp4';
+  if (ref.includes('.mp3')) return 'audio/mpeg';
+  if (ref.includes('.png')) return 'image/png';
+  if (ref.includes('.webp')) return 'image/webp';
+  return 'image/jpeg';
+}
+
+async function resolveCarouselItems(url, urls) {
+  if (urls?.length) return urls;
+  if (!url) return null;
+
+  const post = await getPost(normalizePostUrl(url));
+  if (post.type === 'carousel') {
+    return post.items.map((item) => ({ url: item.url, ext: item.ext }));
+  }
+  return [{ url: post.url, ext: post.ext || (post.type === 'video' ? 'mp4' : 'jpg') }];
+}
+
+async function sendCarouselZip(items, res) {
+  const sessionId = uuidv4();
+  const sessionDir = path.join(TEMP, sessionId);
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  const downloadItem = (item, filePath) => {
+    if (isDirectMediaUrl(item.url)) {
+      return downloadDirect(item.url, filePath);
+    }
+    return downloadToFile(item.url, filePath, ['--format', 'b']);
+  };
+
+  try {
+    const filePaths = await Promise.all(
+      items.map((item, i) => {
+        const filename = `item_${i + 1}.${item.ext || 'jpg'}`;
+        return downloadItem(item, path.join(sessionDir, filename));
+      })
+    );
+
+    res.setHeader('Content-Disposition', 'attachment; filename="carousel.zip"');
+    res.setHeader('Content-Type', 'application/zip');
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.pipe(res);
+    filePaths.forEach((fp) => archive.file(fp, { name: path.basename(fp) }));
+    archive.finalize();
+
+    res.on('finish', () => fs.rmSync(sessionDir, { recursive: true, force: true }));
+  } catch (err) {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 // ── Reel download (stream directly) ──────────────────────────────────────────
@@ -160,28 +216,92 @@ router.post('/post', async (req, res) => {
       return res.status(202).json(result);
     }
     const { source, ...payload } = result;
-    res.json({ ...payload, source: mapSource(source) });
+    const pageUrl = normalizePostUrl(url);
+    const { downloadUrl, downloads } = buildPostDownloadLinks(pageUrl, payload);
+    res.json({
+      ...payload,
+      source: mapSource(source),
+      downloadUrl,
+      downloads,
+    });
   } catch (err) {
     sendAnalyzeError(res, err);
   }
 });
 
-// Carousel ZIP download
-router.post('/carousel/zip', async (req, res) => {
-  const { url, urls } = req.body;
-  let items = urls;
+router.get('/post/stream', async (req, res) => {
+  const { url, index } = req.query;
+  if (!url) return res.status(400).json({ error: 'URL required' });
 
-  if ((!items || !items.length) && url) {
-    try {
-      const post = await getPost(normalizePostUrl(url));
-      if (post.type === 'carousel') {
-        items = post.items.map((item) => ({ url: item.url, ext: item.ext }));
-      } else {
-        items = [{ url: post.url, ext: post.ext || (post.type === 'video' ? 'mp4' : 'jpg') }];
+  const pageUrl = normalizePostUrl(url);
+
+  try {
+    const post = await getPost(pageUrl);
+    let target;
+
+    if (index != null && index !== '') {
+      const idx = parseInt(index, 10);
+      if (post.type !== 'carousel' || !post.items?.[idx - 1]) {
+        return res.status(400).json({ error: 'Invalid carousel slide index' });
       }
-    } catch (scrapeErr) {
-      const err = createPublicScopeError(scrapeErr);
-      return res.status(422).json({
+      target = post.items[idx - 1];
+    } else if (post.type === 'carousel') {
+      return res.status(400).json({
+        error: 'Carousel post — use downloadUrl from POST /post or GET /carousel/stream',
+      });
+    } else {
+      target = {
+        url: post.url,
+        ext: post.ext,
+        type: post.type,
+        videoVersions: post.videoVersions,
+      };
+    }
+
+    if (target.type === 'video') {
+      let media;
+      try {
+        media = parseMediaOptions(req.query);
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+
+      const baseName = `post_${Date.now()}_${media.quality}p`;
+      const videoUrl =
+        pickVideoByQuality(target.videoVersions, media.quality) || target.url;
+
+      if (media.format === 'mp4') {
+        return proxyMediaStream(videoUrl, res, `${baseName}.mp4`, 'video/mp4');
+      }
+
+      const id = uuidv4();
+      const videoPath = path.join(TEMP, `${id}.mp4`);
+      const audioPath = path.join(TEMP, `${id}.mp3`);
+
+      await downloadToTemp(videoUrl, videoPath);
+      await extractMp3(videoPath, audioPath, getAudioBitrate(media.quality));
+
+      res.setHeader('Content-Disposition', `attachment; filename="${baseName}.mp3"`);
+      res.setHeader('Content-Type', 'audio/mpeg');
+
+      const stream = fs.createReadStream(audioPath);
+      stream.pipe(res);
+      stream.on('close', () => {
+        fs.unlink(videoPath, () => {});
+        fs.unlink(audioPath, () => {});
+      });
+      return;
+    }
+
+    const ext = target.ext || 'jpg';
+    const filename = `post_${Date.now()}.${ext}`;
+    const contentType = guessContentType(target.url, filename);
+    await proxyMediaStream(target.url, res, filename, contentType);
+  } catch (scrapeErr) {
+    console.error('[scraper]', scrapeErr.message);
+    const err = createPublicScopeError(scrapeErr);
+    if (!res.headersSent) {
+      res.status(422).json({
         error: err.message,
         scopeLimited: true,
         retryable: err.retryable,
@@ -189,54 +309,54 @@ router.post('/carousel/zip', async (req, res) => {
       });
     }
   }
+});
 
-  if (!items || !Array.isArray(items) || !items.length) {
-    return res.status(400).json({ error: 'Provide url (Instagram post) or urls array' });
-  }
-
-  const sessionId = uuidv4();
-  const sessionDir = path.join(TEMP, sessionId);
-  fs.mkdirSync(sessionDir, { recursive: true });
-
-  const downloadItem = (item, filePath) => {
-    if (isDirectMediaUrl(item.url)) {
-      return downloadDirect(item.url, filePath);
-    }
-    return downloadToFile(item.url, filePath, ['--format', 'b']);
-  };
+router.get('/carousel/stream', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: 'URL required' });
 
   try {
-    const filePaths = await Promise.all(
-      items.map((item, i) => {
-        const filename = `item_${i + 1}.${item.ext || 'jpg'}`;
-        return downloadItem(item, path.join(sessionDir, filename));
-      })
-    );
-
-    res.setHeader('Content-Disposition', 'attachment; filename="carousel.zip"');
-    res.setHeader('Content-Type', 'application/zip');
-
-    const archive = archiver('zip', { zlib: { level: 6 } });
-    archive.pipe(res);
-    filePaths.forEach((fp, i) => archive.file(fp, { name: path.basename(fp) }));
-    archive.finalize();
-
-    // Cleanup after ZIP is sent
-    res.on('finish', () => fs.rmSync(sessionDir, { recursive: true, force: true }));
-  } catch (err) {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-    res.status(500).json({ error: err.message });
+    const items = await resolveCarouselItems(url);
+    if (!items?.length) {
+      return res.status(400).json({ error: 'Could not resolve carousel items' });
+    }
+    await sendCarouselZip(items, res);
+  } catch (scrapeErr) {
+    console.error('[scraper]', scrapeErr.message);
+    const err = createPublicScopeError(scrapeErr);
+    if (!res.headersSent) {
+      res.status(422).json({
+        error: err.message,
+        scopeLimited: true,
+        retryable: err.retryable,
+        ...(err.reasonCode && { reasonCode: err.reasonCode }),
+      });
+    }
   }
 });
 
-function guessContentType(url, filename = '') {
-  const ref = `${filename} ${url}`.toLowerCase();
-  if (ref.includes('.mp4') || ref.includes('video')) return 'video/mp4';
-  if (ref.includes('.mp3')) return 'audio/mpeg';
-  if (ref.includes('.png')) return 'image/png';
-  if (ref.includes('.webp')) return 'image/webp';
-  return 'image/jpeg';
-}
+// Carousel ZIP download (POST body)
+router.post('/carousel/zip', async (req, res) => {
+  const { url, urls } = req.body;
+
+  try {
+    const items = await resolveCarouselItems(url, urls);
+    if (!items?.length) {
+      return res.status(400).json({ error: 'Provide url (Instagram post) or urls array' });
+    }
+    await sendCarouselZip(items, res);
+  } catch (scrapeErr) {
+    const err = createPublicScopeError(scrapeErr);
+    if (!res.headersSent) {
+      res.status(422).json({
+        error: err.message,
+        scopeLimited: true,
+        retryable: err.retryable,
+        ...(err.reasonCode && { reasonCode: err.reasonCode }),
+      });
+    }
+  }
+});
 
 // Proxy CDN media with Content-Disposition: attachment (forces browser download)
 router.get('/download', async (req, res) => {

@@ -76,7 +76,9 @@ app.get('/', (req, res) => {
       instagram: {
         reel: 'POST /api/instagram/reel',
         post: 'POST /api/instagram/post',
+        postStream: 'GET /api/instagram/post/stream',
         carouselZip: 'POST /api/instagram/carousel/zip',
+        carouselStream: 'GET /api/instagram/carousel/stream',
         dp: 'GET /api/instagram/dp/:username',
         dpDownload: 'GET /api/instagram/dp/:username/download',
         story: 'POST /api/instagram/story',

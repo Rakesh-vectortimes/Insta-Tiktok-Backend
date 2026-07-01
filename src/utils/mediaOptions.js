@@ -61,6 +61,38 @@ function buildDownloadLinks(basePath, { url }) {
   return downloads;
 }
 
+function buildPostDownloadLinks(pageUrl, post) {
+  const encodedUrl = encodeURIComponent(pageUrl);
+  const streamBase = '/api/instagram/post/stream';
+
+  if (post.type === 'carousel') {
+    const zipUrl = `/api/instagram/carousel/stream?url=${encodedUrl}`;
+    const downloads = [
+      { format: 'zip', quality: null, label: 'ZIP (all slides)', url: zipUrl },
+      ...post.items.map((item, i) => ({
+        format: item.type === 'video' ? 'mp4' : 'jpg',
+        quality: item.type === 'video' ? 720 : null,
+        label: `Slide ${i + 1} ${(item.ext || (item.type === 'video' ? 'mp4' : 'jpg')).toUpperCase()}`,
+        url: `${streamBase}?url=${encodedUrl}&index=${i + 1}`,
+      })),
+    ];
+    return { downloadUrl: zipUrl, downloads };
+  }
+
+  if (post.type === 'video') {
+    const downloads = buildDownloadLinks(streamBase, { url: pageUrl });
+    const defaultDl =
+      downloads.find((d) => d.format === 'mp4' && d.quality === 720) || downloads[0];
+    return { downloadUrl: defaultDl.url, downloads };
+  }
+
+  const imageUrl = `${streamBase}?url=${encodedUrl}`;
+  return {
+    downloadUrl: imageUrl,
+    downloads: [{ format: 'jpg', quality: null, label: 'JPG', url: imageUrl }],
+  };
+}
+
 module.exports = {
   QUALITIES,
   FORMATS,
@@ -68,4 +100,5 @@ module.exports = {
   getVideoFormatString,
   getAudioBitrate,
   buildDownloadLinks,
+  buildPostDownloadLinks,
 };
