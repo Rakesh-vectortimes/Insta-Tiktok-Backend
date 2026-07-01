@@ -32,6 +32,7 @@ const {
   getAudioBitrate,
   buildDownloadLinks,
   buildPostDownloadLinks,
+  buildCarouselSlideUrl,
 } = require('../utils/mediaOptions');
 
 function mapSource(source) {
@@ -205,6 +206,98 @@ router.get('/reel/stream', async (req, res) => {
   }
 });
 
+function resolvePostTarget(post, index) {
+  if (index != null && index !== '') {
+    const idx = parseInt(index, 10);
+    if (post.type !== 'carousel' || !post.items?.[idx - 1]) {
+      const err = new Error('Invalid carousel slide index');
+      err.statusCode = 400;
+      throw err;
+    }
+    return { target: post.items[idx - 1], slideIndex: idx };
+  }
+
+  if (post.type === 'carousel') {
+    const err = new Error(
+      'Carousel post — use GET /carousel/slide?index=1 or downloadUrl from POST /post'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return {
+    target: {
+      url: post.url,
+      ext: post.ext,
+      type: post.type,
+      videoVersions: post.videoVersions,
+    },
+    slideIndex: null,
+  };
+}
+
+async function streamPostTarget(target, req, res, { filenamePrefix = 'post', slideIndex = null } = {}) {
+  if (target.type === 'video') {
+    let media;
+    try {
+      media = parseMediaOptions(req.query);
+    } catch (err) {
+      const e = new Error(err.message);
+      e.statusCode = 400;
+      throw e;
+    }
+
+    const suffix = slideIndex ? `_slide${slideIndex}` : '';
+    const baseName = `${filenamePrefix}${suffix}_${Date.now()}_${media.quality}p`;
+    const videoUrl =
+      pickVideoByQuality(target.videoVersions, media.quality) || target.url;
+
+    if (media.format === 'mp4') {
+      await proxyMediaStream(videoUrl, res, `${baseName}.mp4`, 'video/mp4');
+      return;
+    }
+
+    const id = uuidv4();
+    const videoPath = path.join(TEMP, `${id}.mp4`);
+    const audioPath = path.join(TEMP, `${id}.mp3`);
+
+    await downloadToTemp(videoUrl, videoPath);
+    await extractMp3(videoPath, audioPath, getAudioBitrate(media.quality));
+
+    res.setHeader('Content-Disposition', `attachment; filename="${baseName}.mp3"`);
+    res.setHeader('Content-Type', 'audio/mpeg');
+
+    const stream = fs.createReadStream(audioPath);
+    stream.pipe(res);
+    stream.on('close', () => {
+      fs.unlink(videoPath, () => {});
+      fs.unlink(audioPath, () => {});
+    });
+    return;
+  }
+
+  const ext = target.ext || 'jpg';
+  const suffix = slideIndex ? `_slide${slideIndex}` : '';
+  const filename = `${filenamePrefix}${suffix}_${Date.now()}.${ext}`;
+  const contentType = guessContentType(target.url, filename);
+  await proxyMediaStream(target.url, res, filename, contentType);
+}
+
+function sendStreamError(res, err) {
+  if (res.headersSent) return;
+  if (err.statusCode === 400) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+  const scoped = createPublicScopeError(err);
+  res.status(422).json({
+    error: scoped.message,
+    scopeLimited: true,
+    retryable: scoped.retryable,
+    ...(scoped.reasonCode && { reasonCode: scoped.reasonCode }),
+  });
+}
+
 // ── Post (single image, video, or carousel) ───────────────────────────────────
 router.post('/post', async (req, res) => {
   const { url } = req.body;
@@ -218,8 +311,17 @@ router.post('/post', async (req, res) => {
     const { source, ...payload } = result;
     const pageUrl = normalizePostUrl(url);
     const { downloadUrl, downloads } = buildPostDownloadLinks(pageUrl, payload);
+    const items =
+      payload.type === 'carousel' && payload.items?.length
+        ? payload.items.map((item, i) => ({
+            ...item,
+            downloadUrl: buildCarouselSlideUrl(pageUrl, i + 1),
+          }))
+        : payload.items;
+
     res.json({
       ...payload,
+      ...(items ? { items } : {}),
       source: mapSource(source),
       downloadUrl,
       downloads,
@@ -237,77 +339,33 @@ router.get('/post/stream', async (req, res) => {
 
   try {
     const post = await getPost(pageUrl);
-    let target;
+    const { target, slideIndex } = resolvePostTarget(post, index);
+    await streamPostTarget(target, req, res, { filenamePrefix: 'post', slideIndex });
+  } catch (err) {
+    console.error('[scraper]', err.message);
+    sendStreamError(res, err);
+  }
+});
 
-    if (index != null && index !== '') {
-      const idx = parseInt(index, 10);
-      if (post.type !== 'carousel' || !post.items?.[idx - 1]) {
-        return res.status(400).json({ error: 'Invalid carousel slide index' });
-      }
-      target = post.items[idx - 1];
-    } else if (post.type === 'carousel') {
-      return res.status(400).json({
-        error: 'Carousel post — use downloadUrl from POST /post or GET /carousel/stream',
-      });
-    } else {
-      target = {
-        url: post.url,
-        ext: post.ext,
-        type: post.type,
-        videoVersions: post.videoVersions,
-      };
+router.get('/carousel/slide', async (req, res) => {
+  const { url, index } = req.query;
+  if (!url) return res.status(400).json({ error: 'URL required' });
+  if (index == null || index === '') {
+    return res.status(400).json({ error: 'index required (1-based slide number)' });
+  }
+
+  const pageUrl = normalizePostUrl(url);
+
+  try {
+    const post = await getPost(pageUrl);
+    if (post.type !== 'carousel') {
+      return res.status(400).json({ error: 'URL is not a carousel post' });
     }
-
-    if (target.type === 'video') {
-      let media;
-      try {
-        media = parseMediaOptions(req.query);
-      } catch (err) {
-        return res.status(400).json({ error: err.message });
-      }
-
-      const baseName = `post_${Date.now()}_${media.quality}p`;
-      const videoUrl =
-        pickVideoByQuality(target.videoVersions, media.quality) || target.url;
-
-      if (media.format === 'mp4') {
-        return proxyMediaStream(videoUrl, res, `${baseName}.mp4`, 'video/mp4');
-      }
-
-      const id = uuidv4();
-      const videoPath = path.join(TEMP, `${id}.mp4`);
-      const audioPath = path.join(TEMP, `${id}.mp3`);
-
-      await downloadToTemp(videoUrl, videoPath);
-      await extractMp3(videoPath, audioPath, getAudioBitrate(media.quality));
-
-      res.setHeader('Content-Disposition', `attachment; filename="${baseName}.mp3"`);
-      res.setHeader('Content-Type', 'audio/mpeg');
-
-      const stream = fs.createReadStream(audioPath);
-      stream.pipe(res);
-      stream.on('close', () => {
-        fs.unlink(videoPath, () => {});
-        fs.unlink(audioPath, () => {});
-      });
-      return;
-    }
-
-    const ext = target.ext || 'jpg';
-    const filename = `post_${Date.now()}.${ext}`;
-    const contentType = guessContentType(target.url, filename);
-    await proxyMediaStream(target.url, res, filename, contentType);
-  } catch (scrapeErr) {
-    console.error('[scraper]', scrapeErr.message);
-    const err = createPublicScopeError(scrapeErr);
-    if (!res.headersSent) {
-      res.status(422).json({
-        error: err.message,
-        scopeLimited: true,
-        retryable: err.retryable,
-        ...(err.reasonCode && { reasonCode: err.reasonCode }),
-      });
-    }
+    const { target, slideIndex } = resolvePostTarget(post, index);
+    await streamPostTarget(target, req, res, { filenamePrefix: 'slide', slideIndex });
+  } catch (err) {
+    console.error('[scraper]', err.message);
+    sendStreamError(res, err);
   }
 });
 

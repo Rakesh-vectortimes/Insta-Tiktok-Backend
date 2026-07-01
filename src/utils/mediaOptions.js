@@ -61,6 +61,14 @@ function buildDownloadLinks(basePath, { url }) {
   return downloads;
 }
 
+function buildCarouselSlideUrl(pageUrl, index) {
+  const params = new URLSearchParams({
+    url: pageUrl,
+    index: String(index),
+  });
+  return `/api/instagram/carousel/slide?${params.toString()}`;
+}
+
 function buildPostDownloadLinks(pageUrl, post) {
   const encodedUrl = encodeURIComponent(pageUrl);
   const streamBase = '/api/instagram/post/stream';
@@ -73,7 +81,7 @@ function buildPostDownloadLinks(pageUrl, post) {
         format: item.type === 'video' ? 'mp4' : 'jpg',
         quality: item.type === 'video' ? 720 : null,
         label: `Slide ${i + 1} ${(item.ext || (item.type === 'video' ? 'mp4' : 'jpg')).toUpperCase()}`,
-        url: `${streamBase}?url=${encodedUrl}&index=${i + 1}`,
+        url: buildCarouselSlideUrl(pageUrl, i + 1),
       })),
     ];
     return { downloadUrl: zipUrl, downloads };
@@ -101,4 +109,5 @@ module.exports = {
   getAudioBitrate,
   buildDownloadLinks,
   buildPostDownloadLinks,
+  buildCarouselSlideUrl,
 };

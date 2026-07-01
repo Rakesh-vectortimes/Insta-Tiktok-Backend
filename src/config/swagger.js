@@ -154,9 +154,15 @@ const options = {
                   index: { type: 'integer' },
                   url: { type: 'string' },
                   thumbnail: { type: 'string' },
-                  ext: { type: 'string' },
-                  type: { type: 'string', enum: ['image', 'video'] },
-                },
+                      ext: { type: 'string' },
+                      type: { type: 'string', enum: ['image', 'video'] },
+                      downloadUrl: {
+                        type: 'string',
+                        description: 'Download this slide individually',
+                        example:
+                          '/api/instagram/carousel/slide?url=https%3A%2F%2Fwww.instagram.com%2Fp%2FABC%2F&index=1',
+                      },
+                    },
               },
             },
             downloadUrl: {
@@ -379,6 +385,53 @@ const options = {
             },
             400: { description: 'Missing URL' },
             500: { description: 'Fetch failed' },
+          },
+        },
+      },
+      '/api/instagram/carousel/slide': {
+        get: {
+          tags: ['Instagram'],
+          summary: 'Download a single carousel slide',
+          description:
+            'Streams one slide from a carousel post. index is 1-based (first slide = 1).',
+          parameters: [
+            {
+              name: 'url',
+              in: 'query',
+              required: true,
+              schema: { type: 'string', format: 'uri' },
+              description: 'Instagram carousel post URL',
+            },
+            {
+              name: 'index',
+              in: 'query',
+              required: true,
+              schema: { type: 'integer', minimum: 1, example: 1 },
+              description: 'Slide number (1 = first image)',
+            },
+            {
+              name: 'format',
+              in: 'query',
+              schema: { type: 'string', enum: ['mp4', 'mp3'], default: 'mp4' },
+              description: 'Video slides only',
+            },
+            {
+              name: 'quality',
+              in: 'query',
+              schema: { type: 'string', enum: ['360', '720', '1080'], default: '720' },
+              description: 'Video slides only',
+            },
+          ],
+          responses: {
+            200: {
+              description: 'Slide file download',
+              content: {
+                'image/jpeg': { schema: { type: 'string', format: 'binary' } },
+                'video/mp4': { schema: { type: 'string', format: 'binary' } },
+              },
+            },
+            400: { description: 'Missing index or invalid slide' },
+            422: { description: 'Post not accessible' },
           },
         },
       },
