@@ -48,19 +48,95 @@ function createIgAxios({ useProxy = true, ...extra } = {}) {
   };
 
   if (proxyUrl) {
-    const agent = new HttpsProxyAgent(proxyUrl);
-    config.httpAgent = agent;
-    config.httpsAgent = agent;
-    config.proxy = false;
+    try {
+      const agent = new HttpsProxyAgent(proxyUrl);
+      config.httpAgent = agent;
+      config.httpsAgent = agent;
+      config.proxy = false;
+    } catch (err) {
+      console.warn('[proxy] Invalid IG_HTTP_PROXY — proxy disabled for this client:', err.message);
+    }
   }
 
   return axios.create(config);
 }
 
-// instagram.com / i.instagram.com metadata — routes through IG_HTTP_PROXY when set
-const igAxios = createIgAxios({ useProxy: true });
-// CDN (cdninstagram.com, fbcdn.net) — direct, no proxy (saves bandwidth)
-const igCdnAxios = createIgAxios({ useProxy: false });
+function createLazyClient(getter) {
+  return new Proxy(
+    {},
+    {
+      get(_, prop) {
+        const client = getter();
+        const value = client[prop];
+        return typeof value === 'function' ? value.bind(client) : value;
+      },
+    }
+  );
+}
+
+let igAxiosInstance = null;
+let igCdnAxiosInstance = null;
+
+function getIgAxios() {
+  if (!igAxiosInstance) {
+    igAxiosInstance = createIgAxios({ useProxy: true });
+    if (getProxyUrl()) {
+      const status = getProxyStatus();
+      console.log(`[proxy] igAxios using ${status.host}:${status.port}`);
+    }
+  }
+  return igAxiosInstance;
+}
+
+function getIgCdnAxios() {
+  if (!igCdnAxiosInstance) {
+    igCdnAxiosInstance = createIgAxios({ useProxy: false });
+  }
+  return igCdnAxiosInstance;
+}
+
+// Lazy clients — read IG_HTTP_PROXY on first request, not at module import
+const igAxios = createLazyClient(getIgAxios);
+const igCdnAxios = createLazyClient(getIgCdnAxios);
+
+function isHtmlWall(data) {
+  return typeof data === 'string' && /<!DOCTYPE html|<html/i.test(data.slice(0, 300));
+}
+
+async function testProxyConnection(username = 'instagram') {
+  const status = getProxyStatus();
+  if (!status.enabled) {
+    return { ...status, tested: false, reachable: null };
+  }
+
+  try {
+    const profileUrl = `https://www.instagram.com/${username}/`;
+    const res = await getIgAxios().get(
+      `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
+      {
+        headers: chromeApiHeaders(profileUrl),
+        timeout: 15000,
+      }
+    );
+
+    const reachable = res.status === 200 && !isHtmlWall(res.data) && !!res.data?.data?.user;
+    return {
+      ...status,
+      tested: true,
+      reachable,
+      instagramStatus: res.status,
+      ...(reachable ? {} : { hint: 'Proxy is routing but Instagram still blocked — use a residential proxy, not datacenter.' }),
+    };
+  } catch (err) {
+    return {
+      ...status,
+      tested: true,
+      reachable: false,
+      error: err.message,
+      hint: 'Proxy connection failed — check IG_HTTP_PROXY credentials and format.',
+    };
+  }
+}
 
 function chromeDocumentHeaders(referer) {
   return {
@@ -110,9 +186,12 @@ function iphoneHeaders() {
 module.exports = {
   igAxios,
   igCdnAxios,
+  getIgAxios,
+  getIgCdnAxios,
   createIgAxios,
   getProxyUrl,
   getProxyStatus,
+  testProxyConnection,
   chromeDocumentHeaders,
   chromeApiHeaders,
   iphoneHeaders,

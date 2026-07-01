@@ -21,7 +21,7 @@ const { queueStats } = require('./services/jobQueue');
 const { videoCacheStats } = require('./services/videoCache');
 const { inFlightStats } = require('./services/inFlightDedup');
 const { storageStatus } = require('./services/storage');
-const { getProxyStatus } = require('./utils/igHttp');
+const { getProxyStatus, testProxyConnection } = require('./utils/igHttp');
 
 const app = express();
 
@@ -99,6 +99,10 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', async (req, res) => {
+  const proxy = getProxyStatus();
+  const proxyTest =
+    req.query.proxyTest === '1' ? await testProxyConnection() : undefined;
+
   const response = {
     status: 'ok',
     mode: 'public-only',
@@ -113,7 +117,8 @@ app.get('/health', async (req, res) => {
     queues: {
       download: downloadQueue.stats(),
     },
-    proxy: getProxyStatus(),
+    proxy,
+    ...(proxyTest && { proxyTest }),
   };
 
   res.json(response);

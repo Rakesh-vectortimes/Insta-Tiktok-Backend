@@ -1,6 +1,7 @@
 const {
   igAxios,
   igCdnAxios,
+  getProxyStatus,
   chromeDocumentHeaders,
   chromeApiHeaders,
   iphoneHeaders,
@@ -1041,9 +1042,12 @@ async function getProfileDp(username) {
   }
 
   const blocked = errors.some((msg) => /blocked|rate-limited|429/i.test(msg));
+  const proxyOn = getProxyStatus().enabled;
   const err = new Error(
     blocked
-      ? 'Instagram blocked or rate-limited this server IP. Wait and retry, or set IG_HTTP_PROXY in Railway environment variables.'
+      ? proxyOn
+        ? 'Instagram blocked requests through the configured proxy. Use a residential proxy (not datacenter/shared) or retry later.'
+        : 'Instagram blocked or rate-limited this server IP. Set IG_HTTP_PROXY in Railway environment variables.'
       : `Could not fetch profile (${errors.join('; ')})`
   );
   err.retryable = blocked;
