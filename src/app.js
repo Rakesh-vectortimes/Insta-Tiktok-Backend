@@ -13,7 +13,7 @@ const tiktokRoutes = require('./routes/tiktok');
 const jobRoutes = require('./routes/jobs');
 const analyzeApiRoutes = require('./routes/analyzeApi');
 const { cleanupTemp } = require('./utils/cleanup');
-const { globalLimiter, getActiveCount } = require('./utils/globalLimiter');
+const { globalLimiter, getActiveCount, getLimiterStats } = require('./utils/globalLimiter');
 const { cacheStats } = require('./services/cache');
 const { downloadQueue } = require('./services/requestQueue');
 const { redisStatus } = require('./services/redis');
@@ -110,6 +110,7 @@ app.get('/health', async (req, res) => {
     mode: 'public-only',
     instagramCookies: 'disabled (public-only)',
     activeRequests: getActiveCount(),
+    limiter: getLimiterStats(),
     inFlight: inFlightStats(),
     redis: await redisStatus(),
     cache: cacheStats(),
