@@ -12,6 +12,7 @@ const instagramRoutes = require('./routes/instagram');
 const tiktokRoutes = require('./routes/tiktok');
 const jobRoutes = require('./routes/jobs');
 const analyzeApiRoutes = require('./routes/analyzeApi');
+const analyticsRoutes = require('./routes/analytics');
 const { cleanupTemp } = require('./utils/cleanup');
 const { globalLimiter, getActiveCount, getLimiterStats } = require('./utils/globalLimiter');
 const { cacheStats } = require('./services/cache');
@@ -61,6 +62,7 @@ app.use('/api/', limiter);
 app.use('/api/instagram', instagramRoutes);
 app.use('/api/tiktok', tiktokRoutes);
 app.use('/api/jobs', jobRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 app.get('/', (req, res) => {
   res.json({
@@ -93,6 +95,11 @@ app.get('/', (req, res) => {
         video: 'POST /api/tiktok/video',
         audio: 'POST /api/tiktok/audio',
         slideshow: 'POST /api/tiktok/slideshow',
+      },
+      analytics: {
+        today: 'GET /api/analytics/today',
+        week: 'GET /api/analytics/week',
+        day: 'GET /api/analytics/day/:date',
       },
     },
   });

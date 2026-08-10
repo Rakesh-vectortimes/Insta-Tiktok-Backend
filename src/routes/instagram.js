@@ -32,6 +32,7 @@ const {
   enrichDpResponse,
   sendImageBuffer,
 } = require('../services/dpUpscale');
+const { trackRequest } = require('../services/analytics');
 const {
   QUALITIES,
   FORMATS,
@@ -47,6 +48,25 @@ function mapSource(source) {
   if (source === 'cache') return 'cache';
   if (source === 'session') return 'session';
   return 'scraper';
+}
+
+function clientSourceHint(req) {
+  const header = String(req.headers['x-client-source'] || '').toLowerCase();
+  if (header === 'device') return 'device';
+  return null;
+}
+
+function trackEndpoint(req, endpoint, start, { source, success, reason, url, username } = {}) {
+  const mapped = clientSourceHint(req) || mapSource(source);
+  void trackRequest({
+    endpoint,
+    source: mapped,
+    success: Boolean(success),
+    reason: reason || (success ? 'ok' : 'unknown'),
+    durationMs: Date.now() - start,
+    url,
+    username,
+  });
 }
 
 function withTimeout(promise, ms, message) {
@@ -139,6 +159,7 @@ async function sendCarouselZip(items, res) {
 
 // ── Reel download (stream directly) ──────────────────────────────────────────
 router.post('/reel', async (req, res) => {
+  const start = Date.now();
   const { url, format, quality } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
@@ -157,20 +178,39 @@ router.post('/reel', async (req, res) => {
   try {
     const scraped = await analyzeUrl(url, { mode: 'reel' });
     if (scraped.status === 'queued') {
+      trackEndpoint(req, 'reel', start, {
+        source: 'scraper',
+        success: true,
+        reason: 'queued',
+        url,
+      });
       return res.status(202).json(scraped);
     }
+    const source = mapSource(scraped.source);
+    trackEndpoint(req, 'reel', start, {
+      source,
+      success: true,
+      reason: 'ok',
+      url,
+    });
     return res.json({
       title: scraped.title || 'reel',
       thumbnail: scraped.thumbnail,
       duration: scraped.duration,
       author: scraped.author,
-      source: mapSource(scraped.source),
+      source,
       formats: FORMATS,
       qualities: QUALITIES.map((q) => `${q}p`),
       downloadUrl: selected.url,
       downloads,
     });
   } catch (err) {
+    trackEndpoint(req, 'reel', start, {
+      source: 'scraper',
+      success: false,
+      reason: err.reasonCode || 'unknown',
+      url,
+    });
     sendAnalyzeError(res, err);
   }
 });
@@ -349,15 +389,23 @@ function sendStreamError(res, err) {
 
 // ── Post (single image, video, or carousel) ───────────────────────────────────
 router.post('/post', async (req, res) => {
+  const start = Date.now();
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
   try {
     const result = await analyzeUrl(url, { mode: 'post' });
     if (result.status === 'queued') {
+      trackEndpoint(req, 'post', start, {
+        source: 'scraper',
+        success: true,
+        reason: 'queued',
+        url,
+      });
       return res.status(202).json(result);
     }
     const { source, ...payload } = result;
+    const mappedSource = mapSource(source);
     const pageUrl = normalizePostUrl(url);
     const { downloadUrl, downloads } = buildPostDownloadLinks(pageUrl, payload);
     const items =
@@ -368,14 +416,26 @@ router.post('/post', async (req, res) => {
           }))
         : payload.items;
 
+    trackEndpoint(req, 'post', start, {
+      source: mappedSource,
+      success: true,
+      reason: 'ok',
+      url,
+    });
     res.json({
       ...payload,
       ...(items ? { items } : {}),
-      source: mapSource(source),
+      source: mappedSource,
       downloadUrl,
       downloads,
     });
   } catch (err) {
+    trackEndpoint(req, 'post', start, {
+      source: 'scraper',
+      success: false,
+      reason: err.reasonCode || 'unknown',
+      url,
+    });
     sendAnalyzeError(res, err);
   }
 });
@@ -444,6 +504,7 @@ router.get('/carousel/stream', async (req, res) => {
 
 // Carousel ZIP download (POST body)
 router.post('/carousel/zip', async (req, res) => {
+  const start = Date.now();
   const { url, urls } = req.body;
 
   try {
@@ -452,8 +513,20 @@ router.post('/carousel/zip', async (req, res) => {
       return res.status(400).json({ error: 'Provide url (Instagram post) or urls array' });
     }
     await sendCarouselZip(items, res);
+    trackEndpoint(req, 'carousel', start, {
+      source: 'scraper',
+      success: true,
+      reason: 'ok',
+      url,
+    });
   } catch (scrapeErr) {
     const err = createPublicScopeError(scrapeErr);
+    trackEndpoint(req, 'carousel', start, {
+      source: 'scraper',
+      success: false,
+      reason: err.reasonCode || 'unknown',
+      url,
+    });
     if (!res.headersSent) {
       res.status(422).json({
         error: err.message,
@@ -535,6 +608,7 @@ router.get('/dp/:username/download', async (req, res) => {
 });
 
 router.get('/dp/:username', async (req, res) => {
+  const start = Date.now();
   const { username } = req.params;
   if (!username?.trim()) {
     return res.status(400).json({ error: 'Username required' });
@@ -546,6 +620,12 @@ router.get('/dp/:username', async (req, res) => {
   try {
     const cached = await getFromCache(cacheKey);
     if (cached) {
+      trackEndpoint(req, 'dp', start, {
+        source: 'cache',
+        success: true,
+        reason: 'ok',
+        username: cleanUsername,
+      });
       return res.json({
         ...enrichDpResponse(cached, cleanUsername),
         source: 'cache',
@@ -559,8 +639,20 @@ router.get('/dp/:username', async (req, res) => {
     );
 
     await saveCache(cacheKey, result, ttlForMode('dp'));
+    trackEndpoint(req, 'dp', start, {
+      source: result.source || 'scraper',
+      success: true,
+      reason: 'ok',
+      username: cleanUsername,
+    });
     res.json(enrichDpResponse(result, cleanUsername));
   } catch (err) {
+    trackEndpoint(req, 'dp', start, {
+      source: 'scraper',
+      success: false,
+      reason: err.reasonCode || 'dp_timeout',
+      username: cleanUsername,
+    });
     res.status(503).json({
       error: 'Could not fetch profile picture. Try again.',
       retryable: true,
