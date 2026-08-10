@@ -43,6 +43,19 @@ function mapSource(source) {
   return 'scraper';
 }
 
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(message);
+      err.reasonCode = 'dp_timeout';
+      err.retryable = true;
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function sendAnalyzeError(res, err, fallbackStatus = 500) {
   if (err.jobId) {
     return res.status(202).json({
@@ -476,7 +489,11 @@ router.get('/dp/:username/download', async (req, res) => {
     let dpData = await getFromCache(cacheKey);
 
     if (!dpData) {
-      dpData = await getProfileDp(cleanUsername);
+      dpData = await withTimeout(
+        getProfileDp(cleanUsername),
+        8000,
+        'DP fetch timed out'
+      );
       await saveCache(cacheKey, dpData, ttlForMode('dp'));
     }
 
@@ -489,8 +506,9 @@ router.get('/dp/:username/download', async (req, res) => {
   } catch (err) {
     if (!res.headersSent) {
       res.status(503).json({
-        error: err.message,
+        error: 'Could not fetch profile picture. Try again.',
         retryable: true,
+        reasonCode: err.reasonCode || 'dp_timeout',
       });
     }
   }
@@ -515,7 +533,11 @@ router.get('/dp/:username', async (req, res) => {
       });
     }
 
-    const result = await getProfileDp(cleanUsername);
+    const result = await withTimeout(
+      getProfileDp(cleanUsername),
+      8000,
+      'DP fetch timed out'
+    );
     const payload = {
       ...result,
       downloadUrl: `/api/instagram/dp/${encodeURIComponent(result.username || cleanUsername)}/download`,
@@ -525,9 +547,9 @@ router.get('/dp/:username', async (req, res) => {
     res.json(payload);
   } catch (err) {
     res.status(503).json({
-      error: err.message,
+      error: 'Could not fetch profile picture. Try again.',
       retryable: true,
-      reasonCode: 'dp_fetch_failed',
+      reasonCode: err.reasonCode || 'dp_timeout',
     });
   }
 });

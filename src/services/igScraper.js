@@ -967,6 +967,7 @@ async function fetchProfilePage(username) {
   const profileUrl = `https://www.instagram.com/${username}/`;
   const response = await igAxios.get(profileUrl, {
     headers: chromeDocumentHeaders(),
+    timeout: 5000,
   });
   const { data, status, headers: responseHeaders } = response;
 
@@ -1016,7 +1017,7 @@ async function fetchProfileViaApi(username, pageContext = null) {
 
   const { data, status } = await igAxios.get(
     `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
-    { headers }
+    { headers, timeout: 5000 }
   );
 
   if (isHtmlWall(data)) {
@@ -1061,6 +1062,7 @@ async function fetchProfileViaMobileApi(username, pageContext = null) {
         Referer: profileUrl,
         ...(cookieHeader ? { Cookie: cookieHeader } : {}),
       },
+      timeout: 5000,
     }
   );
 
@@ -1109,6 +1111,7 @@ async function fetchProfileViaPage(username) {
   for (const headers of [iphoneHeaders(), chromeDocumentHeaders()]) {
     const { data, status } = await igAxios.get(profileUrl, {
       headers,
+      timeout: 5000,
       validateStatus: (s) => s < 500,
     });
     if (status !== 200) continue;
@@ -1137,7 +1140,7 @@ async function fetchProfileViaOEmbed(username) {
   const profileUrl = `https://www.instagram.com/${username}/`;
   const { data, status } = await igAxios.get(
     `https://www.instagram.com/oembed/?url=${encodeURIComponent(profileUrl)}`,
-    { headers: iphoneHeaders(), timeout: 10000 }
+    { headers: iphoneHeaders(), timeout: 5000 }
   );
 
   if (status === 429 || status === 403) {
