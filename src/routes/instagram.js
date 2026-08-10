@@ -25,6 +25,7 @@ const {
   assertBufferMatchesContentType,
 } = require('../services/igScraper');
 const { analyzeUrl } = require('../services/analyzeUrl');
+const { getFromCache, saveCache, ttlForMode } = require('../services/cache');
 const {
   QUALITIES,
   FORMATS,
@@ -37,7 +38,8 @@ const {
 } = require('../utils/mediaOptions');
 
 function mapSource(source) {
-  if (source === 'session') return 'yt-dlp';
+  if (source === 'cache') return 'cache';
+  if (source === 'session') return 'session';
   return 'scraper';
 }
 
@@ -463,18 +465,32 @@ router.get('/download', async (req, res) => {
 // ── Profile picture (DP) ──────────────────────────────────────────────────────
 router.get('/dp/:username/download', async (req, res) => {
   const { username } = req.params;
+  if (!username?.trim()) {
+    return res.status(400).json({ error: 'Username required' });
+  }
+
+  const cleanUsername = username.toLowerCase().trim().replace('@', '');
+  const cacheKey = `dp:${cleanUsername}`;
 
   try {
-    const profile = await getProfileDp(username);
-    const filename = `${profile.username || username}_dp.jpg`;
-    await proxyMediaStream(profile.dpUrl, res, filename, 'image/jpeg');
+    let dpData = await getFromCache(cacheKey);
+
+    if (!dpData) {
+      dpData = await getProfileDp(cleanUsername);
+      await saveCache(cacheKey, dpData, ttlForMode('dp'));
+    }
+
+    if (!dpData.dpUrl) {
+      return res.status(404).json({ error: 'No profile picture found' });
+    }
+
+    const filename = `${dpData.username || cleanUsername}_dp.jpg`;
+    await proxyMediaStream(dpData.dpUrl, res, filename, 'image/jpeg');
   } catch (err) {
     if (!res.headersSent) {
-      const status = err.retryable ? 503 : 500;
-      res.status(status).json({
+      res.status(503).json({
         error: err.message,
-        retryable: err.retryable || false,
-        ...(err.reasonCode && { reasonCode: err.reasonCode }),
+        retryable: true,
       });
     }
   }
@@ -482,19 +498,36 @@ router.get('/dp/:username/download', async (req, res) => {
 
 router.get('/dp/:username', async (req, res) => {
   const { username } = req.params;
+  if (!username?.trim()) {
+    return res.status(400).json({ error: 'Username required' });
+  }
+
+  const cleanUsername = username.toLowerCase().trim().replace('@', '');
+  const cacheKey = `dp:${cleanUsername}`;
 
   try {
-    const profile = await getProfileDp(username);
-    res.json({
-      ...profile,
-      downloadUrl: `/api/instagram/dp/${encodeURIComponent(profile.username || username)}/download`,
-    });
+    const cached = await getFromCache(cacheKey);
+    if (cached) {
+      return res.json({
+        ...cached,
+        source: 'cache',
+        downloadUrl: `/api/instagram/dp/${encodeURIComponent(cached.username || cleanUsername)}/download`,
+      });
+    }
+
+    const result = await getProfileDp(cleanUsername);
+    const payload = {
+      ...result,
+      downloadUrl: `/api/instagram/dp/${encodeURIComponent(result.username || cleanUsername)}/download`,
+    };
+
+    await saveCache(cacheKey, result, ttlForMode('dp'));
+    res.json(payload);
   } catch (err) {
-    const status = err.retryable ? 503 : 500;
-    res.status(status).json({
+    res.status(503).json({
       error: err.message,
-      retryable: err.retryable || false,
-      ...(err.reasonCode && { reasonCode: err.reasonCode }),
+      retryable: true,
+      reasonCode: 'dp_fetch_failed',
     });
   }
 });
