@@ -27,6 +27,12 @@ const {
 const { analyzeUrl } = require('../services/analyzeUrl');
 const { getFromCache, saveCache, ttlForMode } = require('../services/cache');
 const {
+  shouldUpscaleDp,
+  getUpscaledDp,
+  enrichDpResponse,
+  sendImageBuffer,
+} = require('../services/dpUpscale');
+const {
   QUALITIES,
   FORMATS,
   parseMediaOptions,
@@ -502,6 +508,20 @@ router.get('/dp/:username/download', async (req, res) => {
     }
 
     const filename = `${dpData.username || cleanUsername}_dp.jpg`;
+    const forceUpscale =
+      req.query.upscale === '1' || req.query.upscale === 'true';
+    const skipUpscale = req.query.upscale === '0' || req.query.upscale === 'false';
+
+    if (shouldUpscaleDp(dpData.dpSize, { force: forceUpscale, skip: skipUpscale })) {
+      const upscaled = await getUpscaledDp(
+        cleanUsername,
+        dpData.dpUrl,
+        dpData.dpSize
+      );
+      const hdFilename = `${dpData.username || cleanUsername}_dp_hd.jpg`;
+      return sendImageBuffer(res, upscaled.buffer, hdFilename, upscaled.contentType);
+    }
+
     await proxyMediaStream(dpData.dpUrl, res, filename, 'image/jpeg');
   } catch (err) {
     if (!res.headersSent) {
@@ -527,9 +547,8 @@ router.get('/dp/:username', async (req, res) => {
     const cached = await getFromCache(cacheKey);
     if (cached) {
       return res.json({
-        ...cached,
+        ...enrichDpResponse(cached, cleanUsername),
         source: 'cache',
-        downloadUrl: `/api/instagram/dp/${encodeURIComponent(cached.username || cleanUsername)}/download`,
       });
     }
 
@@ -538,13 +557,9 @@ router.get('/dp/:username', async (req, res) => {
       8000,
       'DP fetch timed out'
     );
-    const payload = {
-      ...result,
-      downloadUrl: `/api/instagram/dp/${encodeURIComponent(result.username || cleanUsername)}/download`,
-    };
 
     await saveCache(cacheKey, result, ttlForMode('dp'));
-    res.json(payload);
+    res.json(enrichDpResponse(result, cleanUsername));
   } catch (err) {
     res.status(503).json({
       error: 'Could not fetch profile picture. Try again.',
