@@ -1,4 +1,4 @@
-const { getFromCache, saveCache } = require('./cache');
+const { getFromCache, saveCache, ttlForMode } = require('./cache');
 const { getReel, getPost, normalizePostUrl } = require('./igScraper');
 const { downloadQueue } = require('./requestQueue');
 const { dedupedRun } = require('./inFlightDedup');
@@ -62,7 +62,7 @@ async function analyzeUrl(rawUrl, { mode = 'reel', asyncOnly = false, fromWorker
 
   const result = await dedupedRun(cacheKey, async () => {
     const analyzed = await doAnalyze(pageUrl, { mode });
-    await saveCache(cacheKey, analyzed);
+    await saveCache(cacheKey, analyzed, ttlForMode(mode));
     return analyzed;
   });
 

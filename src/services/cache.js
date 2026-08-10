@@ -12,9 +12,23 @@ const {
   memorySet,
 } = require('./redis');
 
-const TTL_SECONDS = parseInt(process.env.CACHE_TTL_SECONDS || '900', 10);
-const TTL_MS = TTL_SECONDS * 1000;
+const REEL_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const POST_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const DP_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const DEFAULT_TTL_MS = REEL_TTL_MS;
 const CACHE_PREFIX = 'cache:analyze:';
+
+function ttlForMode(mode) {
+  switch (mode) {
+    case 'post':
+      return POST_TTL_MS;
+    case 'dp':
+      return DP_TTL_MS;
+    case 'reel':
+    default:
+      return REEL_TTL_MS;
+  }
+}
 
 const memoryCache = new Map();
 const memorySessionState = new Map();
@@ -51,23 +65,28 @@ async function getFromCache(key) {
   return mem;
 }
 
-async function saveCache(key, value) {
+async function saveCache(key, value, ttlMs = DEFAULT_TTL_MS) {
   const fullKey = `${CACHE_PREFIX}${key}`;
   const serialized = JSON.stringify(value);
+  const ttlSeconds = Math.max(1, Math.round(ttlMs / 1000));
 
   if (isRedisEnabled()) {
-    await redisSet(fullKey, serialized, TTL_SECONDS);
+    await redisSet(fullKey, serialized, ttlSeconds);
   }
 
-  const entry = { value, expiresAt: Date.now() + TTL_MS };
+  const entry = { value, expiresAt: Date.now() + ttlMs };
   memoryCache.set(fullKey, entry);
-  memorySet(fullKey, serialized, TTL_MS);
+  memorySet(fullKey, serialized, ttlMs);
 }
 
 function cacheStats() {
   return {
     size: memoryCache.size,
-    ttlMinutes: TTL_SECONDS / 60,
+    ttlHours: {
+      reel: REEL_TTL_MS / (60 * 60 * 1000),
+      post: POST_TTL_MS / (60 * 60 * 1000),
+      dp: DP_TTL_MS / (60 * 60 * 1000),
+    },
     backend: isRedisEnabled() ? 'redis+memory' : 'memory',
   };
 }
@@ -160,6 +179,10 @@ module.exports = {
   getFromCache,
   saveCache,
   cacheStats,
+  ttlForMode,
+  REEL_TTL_MS,
+  POST_TTL_MS,
+  DP_TTL_MS,
   getSessionState,
   saveSessionState,
   incrementSessionDailyCount,
