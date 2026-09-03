@@ -138,14 +138,20 @@ setInterval(cleanupTemp, 30 * 60 * 1000);
 
 const PORT = process.env.PORT || 4000;
 
-connectRedis().then(() => {
-  app.listen(PORT, '0.0.0.0', () => {
-    const proxy = getProxyStatus();
-    if (proxy.enabled) {
-      console.log(`[proxy] Instagram metadata via ${proxy.host}:${proxy.port}`);
-    } else if (proxy.configured === 'invalid') {
-      console.warn('[proxy] IG_HTTP_PROXY is set but invalid — proxy disabled');
-    }
-    console.log(`✅ Server running on port ${PORT} (public-only)`);
+app.listen(PORT, '0.0.0.0', () => {
+  const proxy = getProxyStatus();
+  if (proxy.enabled) {
+    console.log(`[proxy] Instagram metadata via ${proxy.host}:${proxy.port}`);
+  } else if (proxy.configured === 'invalid') {
+    console.warn('[proxy] IG_HTTP_PROXY is set but invalid — proxy disabled');
+  }
+  console.log(`✅ Server running on port ${PORT} (public-only)`);
+
+  // Never block HTTP listen on Redis — a hung Redis connect takes the whole API offline (502).
+  Promise.race([
+    connectRedis(),
+    new Promise((resolve) => setTimeout(() => resolve(false), 8000)),
+  ]).then((ok) => {
+    if (!ok) console.warn('[redis] connect timed out or failed — using memory fallback');
   });
 });

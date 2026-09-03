@@ -1164,61 +1164,90 @@ async function fetchProfileViaOEmbed(username) {
 }
 
 function getProfileDpFetchers() {
-  if (getProxyStatus().enabled) {
-    return [
-      fetchProfileViaApiWithPageTokens,
-      fetchProfileViaMobileWithPage,
-      fetchProfileViaApi,
-      fetchProfileViaPage,
-      fetchProfileViaOEmbed,
-    ];
-  }
-
+  // oEmbed first: fastest / most reliable for public usernames.
+  // Heavy page+API paths are fallbacks and often burn the route timeout.
   return [
-    fetchProfileViaApiWithPageTokens,
-    fetchProfileViaApi,
-    fetchProfileViaMobileWithPage,
-    fetchProfileViaPage,
     fetchProfileViaOEmbed,
+    fetchProfileViaPage,
+    fetchProfileViaApi,
+    fetchProfileViaApiWithPageTokens,
+    fetchProfileViaMobileWithPage,
   ];
 }
 
 async function getProfileDp(username) {
   const clean = String(username || '').replace(/^@/, '').trim();
-  if (!clean) throw new Error('Username required');
+  if (!clean) {
+    const err = new Error('Username required');
+    err.reasonCode = 'invalid_username';
+    err.retryable = false;
+    throw err;
+  }
 
   const errors = [];
-  const results = [];
+  let best = null;
 
   for (const fetcher of getProfileDpFetchers()) {
     try {
       const profile = await fetcher(clean);
+      if (!profile?.dpUrl) continue;
+
       const normalized = {
         ...profile,
         dpUrl: normalizeMediaUrl(profile.dpUrl),
         dpSize: profile.dpSize || profilePicSizeFromUrl(profile.dpUrl) || undefined,
         fullName: profile.fullName ? decodeJsonEscapes(profile.fullName) : profile.fullName,
       };
-      results.push(normalized);
-      if ((normalized.dpSize || 0) >= 320) break;
+
+      if (!best || (normalized.dpSize || 0) > (best.dpSize || 0)) {
+        best = normalized;
+      }
+
+      // First usable result wins. Further HD hunting blew past the 8s route timeout.
+      break;
     } catch (err) {
       errors.push(err.message);
+      if (err.reasonCode === 'rate_limited' && /429/.test(err.message || '')) {
+        // Still try remaining cheaper methods, but remember rate limit.
+      }
     }
   }
 
-  if (results.length > 0) {
-    const best = results.reduce((a, b) => ((a.dpSize || 0) > (b.dpSize || 0) ? a : b));
+  if (best?.dpUrl) {
     if ((best.dpSize || 0) < 320) {
       best.qualityNote =
-        'Instagram only exposed a thumbnail for this profile. HD (320px) requires API access.';
+        'Instagram only exposed a thumbnail for this profile. Download returns a 4x upscaled version.';
     }
     return best;
   }
 
+  const joined = errors.join('; ');
   const rateLimited = errors.some((msg) => /rate-limited|429|blocked/i.test(msg));
-  const err = new Error(`Could not fetch profile (${errors.join('; ')})`);
-  err.retryable = rateLimited;
-  err.reasonCode = rateLimited ? 'rate_limited' : undefined;
+  const notFound = errors.some((msg) => /not found|user not found|no profile/i.test(msg));
+  const isPrivate = errors.some((msg) => /private/i.test(msg));
+
+  let message = 'Unable to retrieve the profile picture. Please check the username and try again.';
+  let reasonCode = 'dp_fetch_failed';
+  let retryable = true;
+
+  if (isPrivate) {
+    message = 'This account is private and cannot be accessed.';
+    reasonCode = 'private';
+    retryable = false;
+  } else if (notFound) {
+    message = 'Profile could not be found.';
+    reasonCode = 'not_found';
+    retryable = false;
+  } else if (rateLimited) {
+    message = 'Instagram is rate-limiting requests. Please try again shortly.';
+    reasonCode = 'rate_limited';
+    retryable = true;
+  }
+
+  const err = new Error(message);
+  err.retryable = retryable;
+  err.reasonCode = reasonCode;
+  err.details = { attempts: errors.slice(0, 5), raw: joined.slice(0, 500) };
   throw err;
 }
 

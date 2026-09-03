@@ -554,11 +554,30 @@ router.get('/download', async (req, res) => {
   }
 });
 
+function dpErrorPayload(err) {
+  const reasonCode = err.reasonCode || 'dp_fetch_failed';
+  const retryable = err.retryable !== false && reasonCode !== 'not_found' && reasonCode !== 'private';
+  let status = 503;
+  if (reasonCode === 'not_found' || reasonCode === 'invalid_username') status = 404;
+  if (reasonCode === 'private') status = 422;
+
+  return {
+    status,
+    body: {
+      error:
+        err.message ||
+        'Unable to retrieve the profile picture. Please check the username and try again.',
+      retryable,
+      reasonCode,
+    },
+  };
+}
+
 // ── Profile picture (DP) ──────────────────────────────────────────────────────
 router.get('/dp/:username/download', async (req, res) => {
   const { username } = req.params;
   if (!username?.trim()) {
-    return res.status(400).json({ error: 'Username required' });
+    return res.status(400).json({ error: 'Username required', reasonCode: 'invalid_username' });
   }
 
   const cleanUsername = username.toLowerCase().trim().replace('@', '');
@@ -571,13 +590,17 @@ router.get('/dp/:username/download', async (req, res) => {
       dpData = await withTimeout(
         getProfileDp(cleanUsername),
         8000,
-        'DP fetch timed out'
+        'Unable to retrieve the profile picture. Please check the username and try again.'
       );
       await saveCache(cacheKey, dpData, ttlForMode('dp'));
     }
 
     if (!dpData.dpUrl) {
-      return res.status(404).json({ error: 'No profile picture found' });
+      return res.status(404).json({
+        error: 'Profile could not be found.',
+        reasonCode: 'not_found',
+        retryable: false,
+      });
     }
 
     const filename = `${dpData.username || cleanUsername}_dp.jpg`;
@@ -586,23 +609,30 @@ router.get('/dp/:username/download', async (req, res) => {
     const skipUpscale = req.query.upscale === '0' || req.query.upscale === 'false';
 
     if (shouldUpscaleDp(dpData.dpSize, { force: forceUpscale, skip: skipUpscale })) {
-      const upscaled = await getUpscaledDp(
-        cleanUsername,
-        dpData.dpUrl,
-        dpData.dpSize
-      );
-      const hdFilename = `${dpData.username || cleanUsername}_dp_hd.jpg`;
-      return sendImageBuffer(res, upscaled.buffer, hdFilename, upscaled.contentType);
+      try {
+        const upscaled = await getUpscaledDp(
+          cleanUsername,
+          dpData.dpUrl,
+          dpData.dpSize
+        );
+        const hdFilename = `${dpData.username || cleanUsername}_dp_hd.jpg`;
+        return sendImageBuffer(res, upscaled.buffer, hdFilename, upscaled.contentType);
+      } catch (upscaleErr) {
+        console.warn('[dp] upscale failed, falling back to original:', upscaleErr.message);
+      }
     }
 
     await proxyMediaStream(dpData.dpUrl, res, filename, 'image/jpeg');
   } catch (err) {
     if (!res.headersSent) {
-      res.status(503).json({
-        error: 'Could not fetch profile picture. Try again.',
-        retryable: true,
-        reasonCode: err.reasonCode || 'dp_timeout',
-      });
+      if (!err.reasonCode && /timed out/i.test(err.message || '')) {
+        err.reasonCode = 'dp_timeout';
+        err.retryable = true;
+        err.message =
+          'Unable to retrieve the profile picture. Please check the username and try again.';
+      }
+      const { status, body } = dpErrorPayload(err);
+      res.status(status).json(body);
     }
   }
 });
@@ -611,7 +641,7 @@ router.get('/dp/:username', async (req, res) => {
   const start = Date.now();
   const { username } = req.params;
   if (!username?.trim()) {
-    return res.status(400).json({ error: 'Username required' });
+    return res.status(400).json({ error: 'Username required', reasonCode: 'invalid_username' });
   }
 
   const cleanUsername = username.toLowerCase().trim().replace('@', '');
@@ -635,7 +665,7 @@ router.get('/dp/:username', async (req, res) => {
     const result = await withTimeout(
       getProfileDp(cleanUsername),
       8000,
-      'DP fetch timed out'
+      'Unable to retrieve the profile picture. Please check the username and try again.'
     );
 
     await saveCache(cacheKey, result, ttlForMode('dp'));
@@ -647,17 +677,20 @@ router.get('/dp/:username', async (req, res) => {
     });
     res.json(enrichDpResponse(result, cleanUsername));
   } catch (err) {
+    if (!err.reasonCode && /timed out/i.test(err.message || '')) {
+      err.reasonCode = 'dp_timeout';
+      err.retryable = true;
+      err.message =
+        'Unable to retrieve the profile picture. Please check the username and try again.';
+    }
     trackEndpoint(req, 'dp', start, {
       source: 'scraper',
       success: false,
       reason: err.reasonCode || 'dp_timeout',
       username: cleanUsername,
     });
-    res.status(503).json({
-      error: 'Could not fetch profile picture. Try again.',
-      retryable: true,
-      reasonCode: err.reasonCode || 'dp_timeout',
-    });
+    const { status, body } = dpErrorPayload(err);
+    res.status(status).json(body);
   }
 });
 

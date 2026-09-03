@@ -10,6 +10,14 @@ const UPSCALE_JPEG_QUALITY = parseInt(process.env.DP_UPSCALE_QUALITY || '92', 10
 
 const memoryUpscaleCache = new Map();
 
+let sharpLib = null;
+function getSharp() {
+  if (!sharpLib) {
+    sharpLib = sharp;
+  }
+  return sharpLib;
+}
+
 function shouldUpscaleDp(dpSize, { force = false, skip = false } = {}) {
   if (skip) return false;
   if (force) return true;
@@ -38,7 +46,7 @@ async function fetchDpImageBuffer(dpUrl) {
 }
 
 async function upscaleImageBuffer(input) {
-  const image = sharp(input);
+  const image = getSharp()(input);
   const meta = await image.metadata();
   const width = meta.width || 0;
   const height = meta.height || 0;
@@ -49,7 +57,7 @@ async function upscaleImageBuffer(input) {
 
   const upscaled = await image
     .resize(width * UPSCALE_FACTOR, height * UPSCALE_FACTOR, {
-      kernel: sharp.kernel.lanczos3,
+      kernel: getSharp().kernel.lanczos3,
       fit: 'fill',
     })
     .jpeg({ quality: UPSCALE_JPEG_QUALITY, mozjpeg: true })
