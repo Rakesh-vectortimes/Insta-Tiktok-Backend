@@ -1,4 +1,3 @@
-const sharp = require('sharp');
 const { igCdnAxios } = require('../utils/igHttp');
 const { isRedisEnabled, redisGet, redisSet, memoryGet, memorySet } = require('./redis');
 const { DP_TTL_MS } = require('./cache');
@@ -11,9 +10,17 @@ const UPSCALE_JPEG_QUALITY = parseInt(process.env.DP_UPSCALE_QUALITY || '92', 10
 const memoryUpscaleCache = new Map();
 
 let sharpLib = null;
+let sharpLoadAttempted = false;
+
 function getSharp() {
-  if (!sharpLib) {
-    sharpLib = sharp;
+  if (sharpLoadAttempted) return sharpLib;
+  sharpLoadAttempted = true;
+  try {
+    // Lazy-load so a broken native binary cannot crash the whole API on boot.
+    sharpLib = require('sharp');
+  } catch (err) {
+    console.error('[dpUpscale] sharp unavailable:', err.message);
+    sharpLib = null;
   }
   return sharpLib;
 }
@@ -46,7 +53,12 @@ async function fetchDpImageBuffer(dpUrl) {
 }
 
 async function upscaleImageBuffer(input) {
-  const image = getSharp()(input);
+  const sharp = getSharp();
+  if (!sharp) {
+    throw new Error('Image upscaling is unavailable on this server');
+  }
+
+  const image = sharp(input);
   const meta = await image.metadata();
   const width = meta.width || 0;
   const height = meta.height || 0;
@@ -57,7 +69,7 @@ async function upscaleImageBuffer(input) {
 
   const upscaled = await image
     .resize(width * UPSCALE_FACTOR, height * UPSCALE_FACTOR, {
-      kernel: getSharp().kernel.lanczos3,
+      kernel: sharp.kernel.lanczos3,
       fit: 'fill',
     })
     .jpeg({ quality: UPSCALE_JPEG_QUALITY, mozjpeg: true })
